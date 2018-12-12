@@ -1,0 +1,2700 @@
+
+
+'CR1000 or CR6 Series Datalogger
+'Program Authors
+'Michael R. Simpson
+'HydroInterface
+'Trevor Violette and Jim DeRose, USGS
+'Program Version Date
+Const ProgramVersionDate = 20180406
+'Last Modified by: Michael Simpson'
+'Argonaut needs to be set to Defaults (DEF), but write down setup parameters first!!!
+'Argonaut set to 55 sec Average Interval and 60 sec Sample Interval
+'Argonaut OutFormat = English, needs to be set
+'Argonaut OutMode = Auto, needs to be set
+'Argonaut AutoSleep = No, needs to be set
+'Set coordinate system to ENU
+'Save Argonaut setup by typing SSU
+'Argonaut deployment is turned on by entering "start"
+'Be sure to unplug computer from serial cable before continuing...
+'20180330 - MRS Corrected port open sections to properly set mode on the cr6
+
+
+
+'-----------------IMPORTANT IMPORTANT-----------------------------------------------
+'BEFORE COMPILING:
+' 1 SET DLD DATALOGGER TYPE IN TOOLS MENU FOR THE TARGET DATALOGGER
+' 2 CHOOSE COSTOMIZE CONSTANTS IN TOOLS MENU, SELECT PROPER CONSTANTS FOR THE TARGET STATION
+' 3 CHOOSE CONDITIONAL COMPILE AND SAVE IN THE COMPILE MENU. RENAME THE FILE WITH STATION ID AND DATE IN FILENAME USING CR6 or CR1 file extension
+' 4 LOAD THE SAVED FILE INTO THE STATION DATALOGGER OR YOU CAN LOAD THE ORIGINAL DLD FILE IF SPACE PERMITS. 
+' 5 DO NOT USE A MAX232 ADAPTER ON THE CSI/0 (ComME) port
+
+' MRS Program re-designed to Use conditional compile
+'20180402 - TAV Aquarius table wouldnt be written if there was a WQError (no sonde present or similar). Now if WQError = True AND we're within the 15min mark, RecAQFlag = true. The Aquarius Table trigger
+'               Flag is now "RecBurstFlag OR RecAQFlag". RecAQflag turns back off after the table is called. 
+'20180406 - TAV Took data tables out of If...Then statements. Put Theta in the QAQC table. Made it so Aquarius table is called if the WQ sonde is dead.
+
+
+SequentialMode 'must not use pipeline mode or averages are missed
+AngleDegrees
+
+'_____________________________Declare Public Variables___________________________________
+Const Yes = True
+Const No = False
+Const UPbeam = 1
+Const VMpress = 2
+Const PSpress = 3
+Const PSpress2 = 4
+Const WqPress = 5
+'-------------------------------------------------------------------------------------------
+'------------------------------------------------------------------------------------
+'Customize constants explanation:
+'"WQBaude" is the Sonde buadrate. 38400 or 9600.  38400 is preferred if Burst data is required
+'"IsWQMax232" Choose if there is a MAX232 adapter on the Sonde Com port
+'"IsVMMax232" Choose if there is a MAx232 adapter on the VM com port
+'isTiltMax232" Choose if there is a MAX232 adapter on the Tilt Port
+'"WQDeadCntMax" number of scans (1 min) of no WQ data before cycling power to the WQ sonde (5 to 120)
+'VMDeadCntMax"  number of scans (1 min) of no VM data before cycling power To the VM (5 To 120)
+'PrimeStageSource" Sensor to use for primary stage
+'SecndStageSource" Sensor to use for Secondary stage 
+'HasTiltSensor" Choose if there is a Tilt Sensor attached
+'Change these values in the Tools/Customize Constants dropdown dialog
+'do not change commented items in this customization section!!!!!!, they are like the keypad menu items.
+
+'Start of Constants Customization Section
+Const WqBaud = 38400
+'value = 9600
+'value = 38400
+Const IsWqMax232 = No
+'value = Yes
+'value = No
+Const IsVmMax232 = No
+'value = Yes
+'value = No
+Const IsTltMax232 = Yes
+'value = Yes
+'value = No
+Const WQDeadCntMax = 20
+'Min = 5
+'Max = 120
+'Inc = 5
+Const VMDeadCntMax = 20
+'Min = 5
+'Max = 120
+'Inc = 5
+Const PrimeStageSource = PSpress
+'value = UpBeam
+'value = VmPress
+'value = PsPress
+'value = PsPress2
+'value = WqPress
+Const SecndStageSource = PSpress2
+'value = UpBeam
+'value = VmPress
+'value = PsPress
+'value = PsPress2
+'value = WqPress
+Const HasTiltSensor = Yes
+'value = Yes
+'value = No
+'End of Constants Customization Section
+
+'------------------------------------------------------------------------------------------
+'Constants to allow program to be used on CR1000 OR CR6 datalogger.
+'in this preliminary version it's assumed that the CDMA uses SW12 no 1 on both dataloggers
+'IMPORTANT! if using CR6 ports ComC1 or ComC3 use the device configuration utility to configure these ports for RS-232 (not TTL or other)
+'-------------------------------------------------------------------------------------------------------------------------------------------
+#If LoggerType = CR1000 Then
+  Const AdcpPort = Com1
+  Const WqSerialPort = ComMe
+  Const TlTSerialPort = Com4
+  Const WqSwitchPort = 6
+  Const TltSwitchPort = 4 'connect to Normally Open relay
+  Const VMSwitchPort = 4 'connect to Normally Closed relay
+  Const PS1Com3 = 3
+  Const PS1Com5 = 5
+  Const PS2Com3 = 3
+  Const PS2Com5 = 5
+  Const UseTltPwrSwitch = No
+  Const UseVMPwrSwitch = Yes
+  Const CamBatBnkCom = 3
+#ElseIf LoggerType = CR6 Then
+  Const AdcpPort = ComC1
+  Const WqSerialPort = ComC1
+  Const TLTSerialPort = ComC3
+  Const WqSwitchPort = U6
+  Const TltSwitchPort = U4 'Connect to Normally Open relay
+  Const VMSwitchPort = U4 'Connect to Normally Closed relay
+  Const UseSW12_2_forWQ = False
+  Const PS1Com3 = U3
+  Const PS1Com5 = U5
+  Const PS2Com3 = U3
+  Const PS2Com5 = U5
+  Const UseTltPwrSwitch = No
+  Const UseVMPwrSwitch = Yes
+  Const CamBatBnkCom = U7
+#EndIf
+
+
+'Declare Constants
+Const VelocityScaleWater = 1/304.8 'converts mm/sec to ft/sec
+'constants for selecting different stage devices
+Const ScanRate = 60
+Const ScanUnit = 2
+Const FastScanRate = 15
+Const FastScanUnit = 2
+
+'data ID's
+Const MaxBins = 10 'Changed back to 27 per JBD
+Const MaxBeams = 3
+'Const BadVel = -32768 'bad velocity indicator from adcp
+Const BadDataIndicator = NAN
+Const Meters_to_Feet = 3.280839895
+Const DegToRad = (3.14159265358979323846/180) 'degrees to radians
+
+'Declare Misc Veriables
+Public SiteID As String * 6 '3 character station identification
+Public SiteNum As Long 'station number
+Public CR1Volts As Float 'power supply voltage to cr10000
+'Public ExtWHConvertVolt As Float 'get volts from external power supply or battery pack
+Public CamBatBnkVolt As Float 'get volts from Acoustic Camera
+Public PTempC As Float 'CR1000 panel temperature in DegC
+Public PTempF As Float 'CR1000 panel temperature in Degf
+Public RecCalibData As Boolean 'flag to recored data at 1 minute interval when measurements are being done.
+Public StoreVariablesFlg As Boolean
+Public GetVariablesFlg As Boolean
+Public DiveVisit As Boolean 'was it a dive visit?
+Public DaysSinceDive As Float 'how many days since a dive visit?
+Public LastDive As String * 10 'date of the last dive visit
+Dim DiveTimeStamp As String * 23 'timestamp for a data point
+Dim Rec15minFlag As Boolean 'set when Dataout table is stored
+Public RecAQFlag As Boolean 'Set when Aquarius table is stored if there is a WQ Error
+Dim Rec24HrFlag As Boolean 'set when QAQC table is stored
+Dim Rec1MinFlag As Boolean 'set when recording Calibration data
+Dim OneMinCount As Long 'used to turn off calibration data after 24 hours (1439 minnutes)
+Public VMBaudRateHi As Boolean 'Selects high and low baud rates for AdcpPort (ADCP communications)
+'Public VMPower As Boolean 'flag to turn VM on and Off manually
+'Public isVMNClosed As Boolean 'is the VM powered using a Normally clo9sed relay
+Public VmDeadCount As Long 'number of times VM has bad data
+
+'Declare variables to hold time values
+Dim rTime(9) As Float 'this array holds time values returned from the realtime statement
+Alias rTime(3) = DOM 'FOR BEAM CHECK
+Alias rTime(4) = Hour
+Alias rTime(5) = Minute
+Alias rTime(6) = Second
+Alias rTime(7) = MicroSecond
+Public LastScan As String * 6 'when did the datalogger most recently scan?
+Dim RealSeconds As Long 'used for computing elapsed time intervals
+Dim Mod5Minutes As Long 'used for computing elapsed time intervals
+Dim Mod15Minutes As Float 'used for computing elapsed time intervals
+Dim Mod60Minutes As Float 'used for computing elapsed time intervals
+Dim ModDay As Float 'used for computing elapsed time intervals
+'Public VMYear As Long 'Date time from the Velocity meter clock
+'Public VMMonth As Long 'Date time from the Velocity meter clock
+'Public VMDay As Long 'Date time from the Velocity meter clock
+'Public VMHour As Long 'Date time from the Velocity meter clock
+'Public VMMinute As Long 'Date time from the Velocity meter clock
+'Public VMSecond As Long 'Date time from the Velocity meter clock
+'Public VMTime As String * 25 'Date time from the Velocity meter clock
+'Public SetVMTimeFlg As Boolean 'used it setting VM Time
+'Public VMTimeString As String * 25 'used it setting VM Time
+Public EXOTimeString As String * 25
+Public SetEXOTimeFlg As Boolean
+Public SplitTime(6) As Float 'used it setting VM Time
+Public RawSetTime As String * 25 'used it setting VM Time and EXO time
+Public FSplitTime(6) As Float 'used it setting VM Time  
+
+
+'Declare variables for CDMA
+Dim CdmaScans As Long 'number of times the datalogger has unsuccessfully attempted to connect to the loggernet server
+Public HrsCdmaOff As Long 'how many hours to allow to pass before trying to restart the CDMA if there are connection issues
+Dim LoggernetAddr As Long 'LoggerNet server PakBus address (generally 4094). if datalogger doesn't see this address as a "neighbor" it assumes connection failure
+'which is used for knowing when to reset CDMA (using the variables above)
+Public CdmaWorks As Boolean 'using the above variable "LoggernetAddr", does the datalogger see 4094 as a neighbor? if not, it's assumed CDMA does not work
+Dim CDMAFailure As Boolean 'indicator of a CDMA failure for triggering a reset
+Public CycleCdmaPwr As Boolean 'cycle the power to the CDMA
+Public IsCDMAOn As Boolean 'Is the CDMA powered? (based on the switch 12V port status, (on or off), and the "IsNClosed" variable
+Public IsCDMANClosed As Boolean 'Is there a Normally Closed Relay installed in the CDMA circuit, if yes, SW12V port stays OFF to keep power to CDMA. if no, SW12V port
+'stays ON to power the CDMA
+Public KeepCDMAon As Boolean 'keep CDMA 24/7 (true) or turn on at the top of the hour for 10 minutes to save battery power (false)
+
+'Declare variables to hold system status information
+Public Tech As String * 3 'user initials so we know who was there for a visit
+Public VisitReason As String *100 'what is the purpose of the visit
+Public SerNum As Long 'datalogger computer serial number
+Public OSVers As String * 18 'datalogger Operating System version
+Public Program As String * 25 'Program version
+Public ProgVersDate As String * 8 'date of the program version, based on the constant "ProgramVersionDate"
+Public ProgErrors As Long 'from "Status" table, The number of compile or runtime errors for the current program.
+Public Low12Volts As Long 'from "status" table, how many times has there been low voltage (based on CR1000 threshold of 9.6v when the CR1000 goes into a lower power
+'mode and discontinues it's measurement tasks until power is restored)
+Public LithBat As Float 'voltage of the internal lithium battery. (this battery keeps memory in case of external power issues)
+Public SkipScans As Long 'number of times a complete scan has been skipped (with the exception of intentionally skipped scans based on ExitScan and Do/Loops
+Public FreeCFMem As Float 'how much memory does the external CF card have remaining
+
+Public ErrorEvent As String * 100 'what caused the automated "SiteVisit" table to be written?
+Public PS1SN As String * 40 'used to get pressure sensor brand, model, and serial number
+Dim InitialPS1SN As String * 40 'used to hold the previous day's serial number and flag it if the instrument has changed
+Public NewPS1 As Boolean 'is it a new pressure sensor?
+Public PS2SN As String * 40 'used to get pressure sensor brand, model, and serial number
+Dim InitialPS2SN As String * 40 'used to hold the previous day's serial number and flag it if the instrument has changed
+Public NewPS2 As Boolean 'is it a new pressure sensor?
+
+'Decoding Velocity variables
+Public ScanNo As Long
+Public NumBins As Long 'ADCP number of bins
+Public PreserveFile As String * 500
+'Declare Vel and Q variables
+Public CalcQ As Boolean 'user select whether to calculate discharge or not
+Public IndexVel As Float 'index velocity based on rating
+Public MeanVel As Float 'average channel velocity based on all bin data
+Public Qcfs As Float 'total discharge
+Public BadQCount As Long 'how many times has the datalogger been unable to calculate discharge? (either bad stage value or bad velocity value)
+Public MinExpVel As Long 'minimum velocity expected at site
+Public MaxExpVel As Long 'maximum velocity expected at site
+Public FlowSign As Long 'positive or negative multipler depending on which side of the channel the instrument is on
+Public BadVelCount As Long 'how many times has there been bad velocity?
+Public DataErr As Long
+Public BadVelFlag As Boolean 'indicates there was a data punch with invalid velocity
+Public BadQFlag As Boolean 'indicates there was a data punch with invalid discharge
+Public Theta As Float 'principle flow directions
+Public IsSL As Boolean
+Public WakeUpVm As Boolean
+Public VMRestartAttempts As Long
+Public buffer As String * 1000
+Public DataLines(11) As String * 175
+Public V1(10) As Float
+Public V2(10) As Float
+Public V3(10) As Float
+Public V1Sig(10) As Long
+Public V2Sig(10) As Long
+Public V3Sig(10) As Long
+Public V1std(10) As Float
+Public V2std(10) As Float
+Public V3std(10) As Float
+Public VMBufLen As Long
+Public VMV1vel As Float
+Public VMV2vel As Float
+Public VMV3vel As Float
+Public VMV1sig As Float
+Public VMV2sig As Float
+Public VMV3Sig As Float
+Public VMSignal As Float
+Public VMTempF As Float
+Public VMStartDist As Float
+Public VMEndDist As Float
+Public VMSerialErr As Long
+Public VMDataValid As Long
+Const rad = 3.14159/180
+Const deg = 180/3.14159
+#If HasTiltSensor Then
+  Public TLTheading As Float
+  Public TLTPitch As Float
+  Public TLTroll As Float
+  Public TLTTempC As Float  
+#EndIf
+Dim LoopInterval As Long
+Dim FastLoopInterval As Long
+
+'Declare Event variable flags
+Dim EventCDMAFlag As Boolean 'added so cdma cycle is only recorded every 24 hours
+Dim EventVoltFlag As Boolean '  '   '  Low Voltage  "       "       "      "
+Dim EventYSIFlag As Boolean  '   "   " BadYSI = 200  "     "        "      "
+Dim EventQFlag As Boolean    '   "   " BadQ = 200    "     "        "      "
+
+'Declare Stage and Area Variables
+Public PSPressPort As Long 'port Pressure sensor 1 is plugged into (3 or 5)
+Public PSPressAddr As Long 'SDI12 address for Pressure sensor 1
+Public PSPressDataIn As Boolean 'are there data from Pressure sensor 1?
+Public PsPress1Stg(2) As Float 'array to hold the values pressure sensor 1 is outputting (temp and feet)
+Public PSpress2Stg(2) As Float 'array to hold values pressure sensor 2 is outputting
+Public PSpress2Port As Long 'port pressure sensor 2 is plugged into (3 or 5)
+Public PSpress2Addr As Long 'SDI12 address for pressure sensor 2
+Public PSpress2DataIn As Boolean 'are there data from pressure sensor 2?
+Public StagePrime As Float 'stage value used in calculating discharge
+Public StageSecnd As Float 'stage value used in calculating stage difference
+Public StgDiff As Float 'absolute value of difference between StagePrime and the user selected instrument stage
+Public UpBeamStg As Float 'stage value (after offset applied) for ADCP vertical beam
+Public VMPressStg As Float 'stage value (after offset applied) for ADCP pressure sensor
+Public PS1Stg As Float ''stage value (after offset applied) for pressure sensor 1
+Public PS2Stg As Float ''stage value (after offset applied) for pressure sensor 2
+Public SondeStg As Float ''stage value (after offset applied) for YSI or EXO sonde
+Public TrueUpBeamStg As Float 'user input stage reference to calculate (and apply) offset to raw upbeam data to output "UpBeamStg"
+Public TrueVMPressStg As Float 'user input stage reference to calculate (and apply) offset to raw ADCP pressure sensor data to output "VMPressStg"
+Public TruePS1Stg As Float 'user input stage reference to calculate (and apply) offset to raw Pressure sensor 1 data to output "PS1Stg"
+Public TruePS2Stg As Float 'user input stage reference to calculate (and apply) offset to raw pressure sensor 2 data to output "PS2Stg"
+Public TrueSondeStg As Float 'user input stage reference to calculate (and apply) offset to raw YSI data to output "YsiStg"
+Public UpBeamOffset As Float 'offset applied to raw data to get stage value
+Public VMPressOffset As Float'offset applied to raw data to get stage value
+Public PS1Offset As Float'offset applied to raw data to get stage value
+Public PS2Offset As Float'offset applied to raw data to get stage value
+Public SondeOffset As Float'offset applied to raw data to get stage value
+Public Area As Float 'calculated channel area based on stage-area rating
+Public BadStgFlag As Boolean 'indicates bad stage value
+Public BadStgCount As Long 'indicates number of times bad stage values have occured
+Public MaxExpStg As Long 'maximum expected stage
+Public MinExpStg As Long 'minimum expected stage
+
+'Declare Rating Variables
+'Should we make these arrays for easier output?
+Public StgOffset As Float 'stage-area equation coefficient
+Public StgCoef As Float 'stage-area equation coefficient
+Public StgCoef2 As Float 'stage-area equation coefficient
+Public VelOffset As Float 'iVel equation coefficient
+Public VelCoef As Float 'iVel equation coefficient
+Public VelCoef2 As Float 'iVel equation coefficient
+Public VelCoef3 As Float 'iVel equation coefficient
+Public UpVelOffset As Float 'iVel equation coefficient for velocities above transition point (in break point rating)
+Public UpVelCoef As Float 'iVel equation coefficient for velocities above transition point (in break point rating)
+Public UpVelCoef2 As Float 'iVel equation coefficient for velocities above transition point (in break point rating)
+Public UpVelCoef3 As Float 'iVel equation coefficient for velocities above transition point (in break point rating)
+Public LowVelOffset As Float 'iVel equation coefficient for velocities below transition point (in break point rating)
+Public LowVelCoef As Float 'iVel equation coefficient for velocities below transition point (in break point rating)
+Public LowVelCoef2 As Float 'iVel equation coefficient for velocities below transition point (in break point rating)
+Public LowVelCoef3 As Float 'iVel equation coefficient for velocities below transition point (in break point rating)
+Public Trans As String * 4 'Transition point in velocity where iVel calulation decides to use upper or lower rating equation
+'                           Float was used, changed to a 3 character string in case someone accidentally types a number in, this will allow user to revert back to "NAN" -TAV 20141208
+'declare variables for EXO and SDI
+Public WqNparams = 23
+Public Redeploy As Boolean
+Public GetBurst As Boolean
+Public OldEXOTime As Long
+'Exo Parameter Codes from EXO manual. These are used to determine where to put the EXO sensor data.
+Dim DateCode = 52
+Dim TimeCode = 54
+Dim TempCCode = 1
+Dim TempFCode = 2
+Dim CondCode = 7
+Dim TurbCode = 223
+Dim DoSatCode = 211
+Dim DOmgLCode = 212
+Dim DepthCode = 23
+Dim BattCode = 28
+Dim pHCode = 18
+Dim pHmVCode = 17
+Dim ChlugLCode = 193
+Dim ChlRFUCode = 234
+Dim BGApcRFUCode = 216
+Dim BGApcugLCode = 225
+Dim FDomRFU = 227
+Dim FDomQSU = 228
+Dim ORPCode = 19
+Dim NH4Code = 48
+Dim CLCode = 112
+Dim NO3Code = 106
+Dim WiperPos = 229
+Public BurstData(23)
+Dim BurstArray(30,23)
+Public BurstIn As String * 256 'Raw EXO burst data string
+Public jCount As Long 'Counter
+Public kCount As Long 'Counter
+Public BurstCount As Long 'number of burst measurements collected
+Public BurstDate
+Public BurstTime
+Public BurstMedDate
+Public BurstMedTime
+Public BurstTempC
+Public BurstTempF
+Public BurstSpCond
+Public BurstTurbFNU
+Public BurstDOSat
+Public BurstDOmgL
+Public BurstORP
+Public BurstDepthFt
+Public BurstBattV
+Public BurstpH
+Public BurstpHmV
+Public BurstChlugL
+Public BurstChlRFU
+Public BurstBGApcRFU
+Public BurstBGApcugL
+Public BurstFdomRFU
+Public BurstFDomQSU
+Public BurstNH4Amgl
+Public BurstNO3Nmgl
+Public BurstCLmgl
+Public BurstWiperPos
+Public t(23)
+Public WqData(23)
+Public WqIn As String * 256 'Raw EXO data string
+Public WqDelay As Long 'Used as place holder for timer to know how long the wiper is wiping
+
+Public RecBurstFlag As Boolean
+Public WipeTime As String * 25 'Time/Date that the wiper finishes its wipe
+Public WqParamOrder(23) 'Array that holds the Wq Codes to help determine what order the data are coming in.  
+Public WqLocDate
+Public WqLocTime
+Public WqLocTempC
+Public WqLocTempF
+Public WqLocCond
+Public WqLocTurb
+Public WqLocDoSat
+Public WqLocDOmgL
+Public WqLocORP
+Public WqLocDepth
+Public WqLocBatt
+Public WqLocpH
+Public WqLocpHmV
+Public WqLocChlugL
+Public WqLocChlRFU
+Public WqLocBGApcRFU
+Public WqLocBGApcugL
+Public WqLocFDomRFU
+Public WqLocFDomQSU
+Public WqLocNH4
+Public WqLocNO3
+Public WqLocCL
+Public WqLocWiperPos
+Public Wipeflag As Boolean
+Public TempDiff As Float
+Public WqError As Boolean
+Public WqDead As Boolean  
+Public WqBadData As Boolean
+Public WqDate As String
+Public WqTime As String
+Public WqTempC As Float
+Public WqTempF As Float
+Public WqSpCond As Float
+Public WqTurbFNU As Float
+Public WqChlugL As Float
+Public WqChlRFU As Float
+Public WqDOMgl As Float
+Public WqDOSat As Float
+Public WqPH As Float
+Public WqPHmv As Float
+Public WqORP As Float
+Public WqDepthFt As Float
+Public WqBattV As Float
+Public WqBGAugl As Float
+Public WqBGArfu As Float
+Public WqFDOMrfu As Float
+Public WqFDOMqsu As Float
+Public WqNH4mgl As Float
+Public WqNO3mgl As Float
+Public WqCLmgl As Float
+Public WqWiperPos As Float
+Public WqErrCount As Long
+Public WqPwrCycleCnt As Long
+Public WqManualCycle As Boolean
+Public IsWQNClosed As Boolean
+'variables for aquarius table
+Public AvgIndexVel As Float 
+Public AvgVMTempC As Float
+Public AvgVMPitch As Float
+Public AvgVMRoll As Float
+Public AvgStagePrime As Float
+Public AvgStageSec As Float
+
+'Declare variables for velocity meter data
+Public VMUpBeam As Float
+Public VMpressure As Float
+Public VMHeading As Float
+Public VMpitch As Float
+Public VMroll As Float
+Public VMVolts As Float
+Public VMtempC As Float
+Public VMdataIn As Boolean
+
+'-------------------------------------------------------DEBUGGIMG!!!!!-------------------------------------------------
+
+Public ScanDiff As Long
+Public ScanStart 
+Public ScanEnd
+Public ADCPEnd
+Public BeforeBurst
+Public AfterBurst
+Public ProcessTime
+'---------------------------------------------------------DEBUGGING!---------------------------------------------------------
+
+'---------VM Diagnostic Variables
+
+'------------------------String used to send specific data through serial communications to another logger-------------------
+'Public OutString As String * 1000 'string of variables/values to be sent out to another datalogger
+
+PreserveVariables 'preserve values in case of power outages
+SetStatus ("USRDriveSize",16384)
+'__________________________Define Output Tables___________________________________________
+'table for startup, holds only "true" OR "false"
+'DataTable (Startup,True,2)
+'  Sample (1,StartPrams,String)
+'EndTable
+
+'15 MINUTE DATA OUTPUT TABLE
+'data output table has no DataInterval instruction
+'execution of table is controlled completely by main code logic below.
+DataTable (DataOut,Rec15minFlag,-1)'records data only when Record Flag = yes
+  OpenInterval 'tells table to process from last execution of table
+  CardOut (0 ,-1) 'sends copy of data to CF card
+  Sample (1,SiteID,String)
+  Sample (1,SiteNum,String)
+  Sample (1,IndexVel,IEEE4)
+  Sample (1,StagePrime,IEEE4)
+  Average (1,StagePrime,IEEE4,BadStgFlag)
+  Average (1,IndexVel,IEEE4,BadVelFlag)
+  Average (1,MeanVel,IEEE4,BadQFlag)
+  Average (1,Qcfs,IEEE4,BadQFlag)
+  Sample (1,BadStgCount,FP2)
+  Sample (1,BadVelCount,FP2)
+  Sample (1,BadQCount,FP2)
+  Sample (1,VMSerialErr,FP2)
+  Minimum (1,CR1Volts,FP2,False,False)
+  Minimum (1,VMVolts,FP2,False,False)
+  Average (1,VMpitch,FP2,False)
+  Average (1,VMroll,FP2,False)
+  Average (1,VMtempC,FP2,False)
+  Sample (1,WqTempC,FP2)
+  Sample (1,WqSpCond,IEEE4)
+  Sample (1,WqBattV,FP2)
+  Sample (1,WqDOMgl,FP2)
+  Sample (1,WqPH,FP2)
+  Sample (1,WqTurbFNU,FP2)
+  Sample (1,WqChlugL,FP2)
+  Sample (1,WqChlRFU,FP2)
+  Average (1,WqDepthFt,FP2,WqBadData)
+  Average (1,WqTurbFNU,FP2,WqBadData)
+  Median (1,WqTurbFNU,15,FP2,WqBadData)
+  Sample (1,VMHeading,FP2)
+  Sample (1,WqDOSat,FP2)
+  Sample (1,WqORP,FP2)
+  Sample (1,WqFDOMrfu,FP2)
+  Sample (1,WqFDOMqsu,FP2)
+  Sample (1,WqBGAugl,FP2)
+  Sample (1,WqNH4mgl,FP2)
+  Sample (1,WqNO3mgl,FP2)
+  Sample (1,WqCLmgl,FP2)
+  Sample (1,WqWiperPos,FP2)
+  Average(1,VMV1vel,FP2,False)
+  Average (1,VMV2vel,FP2,False)
+  Average(1,VMV3vel,FP2,False)
+  Average(10, V1(),FP2,False)
+  Average(10, V2(),FP2,False)
+  Average(10, V3(),FP2,False)
+  Average(10, V1Sig(),Long,False)
+  Average(10, V2Sig(),Long,False)
+  Average(10, V3Sig(),Long,False)
+  Average(10, V1std(),FP2,False)
+  Average(10, V2std(),FP2,False)
+  Average(10, V3std(),FP2,False)
+  Sample(1,NumBins,Long)
+  Sample(1,VMStartDist,FP2)
+  Sample(1,VMEndDist,FP2)
+  Sample (1,StageSecnd,FP2)
+  Average (1,StageSecnd,IEEE4,false)
+  Average (1,UpBeamStg,IEEE4,false)
+  Average (1,VMPressStg,IEEE4,false)
+  Average (1,PS1Stg,IEEE4,false)
+  Average (1,PS2Stg,IEEE4,false)
+  Average (1,SondeStg,IEEE4,false)
+  Average (1,StgDiff,IEEE4,False)
+  Average (1,TempDiff,IEEE4,False)
+  Minimum (1,CamBatBnkVolt,FP2,False,False)
+  #If HasTiltSensor Then
+   Average(1,TLTheading,IEEE4,False)
+   Average(1,TLTPitch,IEEE4,False)
+   Average(1,TLTroll,IEEE4,False)
+   Average(1,TLTTempC,IEEE4,False)
+  #EndIf
+EndTable
+
+'Data table that is only used for obtaining an EXO burst (1 minute burst of one second dat, once every 15 minutes
+DataTable(Burst,RecBurstFlag,-1)
+  'DataInterval(0,1,Min,-1)
+  CardOut (0 ,-1)
+  OpenInterval
+  Sample (1,SiteID,String)
+  Sample (1,SiteNum,String)
+  Sample (1,BurstDate,IEEE4)
+  Sample (1,BurstTime,IEEE4)
+  Sample (1,BurstMedDate,IEEE4)
+  Sample (1,BurstMedTime,IEEE4)
+  Median (1,BurstTempC,30,IEEE4,WqBadData)
+  Median (1,BurstTempF,30,IEEE4,WqBadData)
+  Median (1,BurstSpCond,30,IEEE4,WqBadData)
+  Median (1,BurstTurbFNU,30,IEEE4,WqBadData)
+  Median (1,BurstDOSat,30,IEEE4,WqBadData)
+  Median (1,BurstDOmgL,30,IEEE4,WqBadData)
+  Median (1,BurstORP,30,IEEE4,WqBadData)
+  Median (1,BurstDepthFt,30,IEEE4,WqBadData)
+  Median (1,BurstBattV,30,FP2,WqBadData)
+  Median (1,BurstpH,30,FP2,WqBadData)
+  Median (1,BurstpHmV,30,FP2,WqBadData))
+  Median (1,BurstChlugL,30,IEEE4,WqBadData)
+  Median (1,BurstChlRFU,30,IEEE4,WqBadData)
+  Median (1,BurstBGApcRFU,30,IEEE4,WqBadData)
+  Median (1,BurstBGApcugL,30,IEEE4,WqBadData)
+  Median (1,BurstFdomRFU,30,IEEE4,WqBadData)
+  Median (1,BurstFDomQSU,30,IEEE4,WqBadData)
+  Median (1,BurstNH4Amgl,30,IEEE4,WqBadData)
+  Median (1,BurstNO3Nmgl,30,IEEE4,WqBadData)
+  Median (1,BurstCLmgl,30,IEEE4,WqBadData)
+  Median (1,BurstWiperPos,30,FP2,WqBadData)
+  Maximum (1,BurstCount,Long,WqBadData,False)
+EndTable
+ 
+DataTable (Aquarius,RecBurstFlag OR RecAQFlag,-1)
+CardOut (0,-1)
+OpenInterval 
+  Sample (1,BurstMedDate,IEEE4)
+  Sample (1,BurstMedTime,IEEE4)
+  Median (1,BurstTempC,30,IEEE4,WqBadData)
+  Median (1,BurstSpCond,30,IEEE4,WqBadData)
+  Median (1,BurstTurbFNU,30,IEEE4,WqBadData)
+  Median (1,BurstDOSat,30,IEEE4,WqBadData)
+  Median (1,BurstDOmgL,30,IEEE4,WqBadData)
+  Median (1,BurstDepthFt,30,IEEE4,WqBadData)
+  Median (1,BurstBattV,30,FP2,WqBadData)
+  Median (1,BurstpH,30,FP2,WqBadData)
+  Median (1,BurstChlugL,30,IEEE4,WqBadData)
+  Median (1,BurstChlRFU,30,IEEE4,WqBadData)
+  Median (1,BurstFdomRFU,30,IEEE4,WqBadData)
+  Median (1,BurstFDomQSU,30,IEEE4,WqBadData)
+  Sample (1,AvgStagePrime,IEEE4)
+  Sample (1,AvgStageSec,IEEE4)
+  Sample (1,AvgIndexVel,IEEE4)
+  Sample (1,AvgVMTempC,IEEE4)
+  Sample (1,AvgVMPitch,IEEE4)
+  Sample (1,AvgVMRoll,IEEE4)
+EndTable
+
+'Store Velocity  data for all bins (used for beam coordinate studies)
+
+'BadQCount or YsiErrCount = 200 (problem for more than 3 hours)
+'And it is called at Midnight
+'QAQC table that is called at midnight and gets pertainent information
+DataTable  (QAQCInfo,Rec24HrFlag,1)
+  CardOut (0,2000) 'sends copy of data to CF card (Will store a lot of data on card)
+  Sample (1,SiteID,String)
+  Sample (1,SiteNum,String)
+  Sample (1,Tech,String)
+  Sample (1,VisitReason,String
+  Sample (1,Program,String)
+  Sample (1,ProgVersDate,String)
+  Sample (1,SerNum,Long)
+  Sample (1,OSVers,String)
+  Sample (1,PS1SN,String)
+  Sample (1,NewPS1,Boolean)
+  Sample (1,PS2SN,String)
+  Sample (1,NewPS2,Boolean)
+  Sample (1,ProgErrors,Long)
+  Sample (1,Low12Volts,Long)
+  Sample (1,LithBat,FP2)
+  Sample (1,SkipScans,Long)
+  Sample (1,FreeCFMem,IEEE4)
+  Sample (1,BadQCount,Long)
+  Sample (1,BadVelCount,Long)
+  Sample (1,VMSerialErr,Long)
+  Sample (1,BadStgCount,Long)
+  Sample (1,WqErrCount,Long)
+  Sample (1,IndexVel,FP2)
+  Sample (1,StagePrime,IEEE4)
+  Sample (1,StageSecnd,IEEE4)
+  Sample (1,PrimeStageSource,FP2)
+  Sample (1,SecndStageSource,FP2)
+  Sample (1,UpBeamStg,IEEE4)
+  Sample (1,VMPressStg,IEEE4)
+  Sample (1,PS1Stg,IEEE4)
+  Sample (1,PS2Stg,IEEE4)
+  Sample (1,SondeStg,IEEE4)
+  Sample (1,UpBeamOffset,FP2)
+  Sample (1,VMPressOffset,FP2)
+  Sample (1,PS1Offset,FP2)
+  Sample (1,PS2Offset,FP2)
+  Sample (1,SondeOffset,FP2)
+  Sample (1,DaysSinceDive,FP2)
+  Sample (1,LastDive,String)
+  Sample (1,VMtempC,FP2)
+  Sample (1,VMpitch,FP2)
+  Sample (1,VMroll,FP2)
+  Sample (1,VMRestartAttempts,Long)
+  Sample (1,CR1Volts,FP2)
+  Maximum (1,PTempC,FP2,false,false)
+  Minimum (1,PTempC,FP2,false,false)
+  Sample (1,WqTurbFNU,FP2)
+  Sample (1,NumBins,FP2)
+  Sample (1,VMHeading,FP2)
+  Sample (1,FlowSign,FP2)
+  Sample (1,Theta,FP2)
+  Sample (1,CdmaWorks,Boolean)
+  Sample (1,StgOffset,IEEE4)
+  Sample (1,StgCoef,IEEE4)
+  Sample (1,StgCoef2,IEEE4)
+  Sample (1,VelOffset,IEEE4)
+  Sample (1,VelCoef,IEEE4)
+  Sample (1,VelCoef2,IEEE4)
+  Sample (1,VelCoef3,IEEE4)
+  Sample (1,UpVelOffset,IEEE4)
+  Sample (1,UpVelCoef,IEEE4)
+  Sample (1,UpVelCoef2,IEEE4)
+  Sample (1,UpVelCoef3,IEEE4)
+  Sample (1,LowVelOffset,IEEE4)
+  Sample (1,LowVelCoef,IEEE4)
+  Sample (1,LowVelCoef2,IEEE4)
+  Sample (1,LowVelCoef3,IEEE4)
+  Sample (1,Trans,FP2)
+EndTable
+
+'This data table is called when there is a station visit
+DataTable(SiteVisit,True,-1)
+  CardOut (0,-1)
+  Sample (1,SiteID,String)
+  Sample (1,SiteNum,String)
+  Sample (1,IndexVel,IEEE4)
+  Sample (1,Qcfs,IEEE4)
+  Sample (1,StagePrime,IEEE4)
+  Sample (1,UpBeamStg,IEEE4)
+  Sample (1,VMPressStg,IEEE4)
+  Sample (1,PS1Stg,IEEE4)
+  Sample (1,PS2Stg,IEEE4)
+  Sample (1,SondeStg,IEEE4)
+  Sample (1,UpBeamOffset,FP2)
+  Sample (1,VMPressOffset,FP2)
+  Sample (1,PS1Offset,FP2)
+  Sample (1,PS2Offset,FP2)
+  Sample (1,SondeOffset,FP2)
+  Sample (1,DiveVisit,Boolean)
+  Sample (1,VMtempC,FP2)
+  Sample (1,VMpitch,FP2)
+  Sample (1,VMroll,FP2)
+  Sample (1,CR1Volts,FP2)
+  Sample (1,VMHeading,FP2)
+  Sample (1,NumBins,Long)
+  'Sample (1,BlankDist,Long)
+  'Sample (1,BinSize,Long)
+  Sample (1,WqBattV,FP2)
+  Sample (1,WqTempC,FP2)
+  Sample (1,WqSpCond,IEEE4)
+  Sample (1,WqTurbFNU,FP2)
+  Sample (1,WqDOMgl,FP2)
+  Sample (1,WqPH,FP2)
+  Sample (1,WqChlugL,FP2)
+  Sample (1,WqChlRFU,FP2)
+  Sample (1,WqDepthFt,FP2)
+  Sample (1,WqDOSat,FP2)
+  Sample (1,WqFDOMrfu,FP2)
+  Sample (1,WqFDOMqsu,FP2)
+  Sample (1,WqBGArfu,FP2)
+  Sample (1,WqBGAugl,FP2)
+  Sample (1,WqNH4mgl,FP2)
+  Sample (1,WqNO3mgl,FP2)
+  Sample (1,WqCLmgl,FP2)
+  Sample (1,WqErrCount,Long) 
+  Sample (1,BadQCount,Long)
+  Sample (1,LithBat,FP2)
+  Sample (1,Tech,String)
+  Sample (1,VisitReason,String)
+EndTable
+
+'1 MINUTE DATA OUTPUT TABLE
+DataTable (Data1m,Rec1MinFlag,-1)
+  OpenInterval
+  CardOut (0 ,-1000)
+  Sample (1,SiteID,String)
+  Sample (1,SiteNum,String)
+  Sample (1,StagePrime,IEEE4)
+  Sample (1,IndexVel,IEEE4)
+  Sample (1,MeanVel,IEEE4,)
+  Sample (1,Qcfs,IEEE4)
+  Sample (1,WqBattV,FP2)
+  Sample (1,WqTempC,FP2)
+  Sample (1,WqSpCond,IEEE4)
+  Sample (1,WqTurbFNU,FP2)
+  Sample (1,WqDOMgl,FP2)
+  Sample (1,WqPH,FP2)
+  Sample (1,WqPHmv,FP2)
+  Sample (1,WqChlugL,FP2)
+  Sample (1,WqChlRFU,FP2)
+  Sample (1,WqDepthFt,FP2)
+  Sample (1,WqDOSat,FP2)
+  Sample (1,WqFDOMrfu,FP2)
+  Sample (1,WqFDOMqsu,FP2)
+  Sample (1,WqBGArfu,FP2)
+  Sample (1,WqBGAugl,FP2)
+  Sample (1,WqNH4mgl,FP2)
+  Sample (1,WqNO3mgl,FP2)
+  Sample (1,WqCLmgl,FP2)
+  Sample (1,WqWiperPos,FP2)    
+  Sample (1,PrimeStageSource,FP2)
+  Sample (1,VMV1vel,FP2)
+  Sample (1,VMV2vel,FP2)
+  Sample (1,VMV3vel,FP2)
+  Sample (10, V1(),FP2)
+  Sample (10, V2(),FP2)
+  Sample (10, V3(),FP2)
+  Sample (1,VMStartDist,FP2)
+  Sample (1,VMEndDist,FP2)
+  Sample (1,NumBins,FP2)
+  Sample (1,BadVelCount,Long)
+  Sample (1,VMSerialErr,Long)
+EndTable
+
+'____________________________________SUBROUTINES__________________________________________
+
+'________________________________Get Startup Information__________________________________
+Sub GetStartup
+  'look at startup table to see if user set UseDefaults to no
+  '  If Startup.StartPrams(1,1) <> "false" Then 'insert default values
+  '    UseDefaults = "false"
+  ProgVersDate = ProgramVersionDate
+  LastScan = "00:00"
+  '******************Below are the default stations Parameters (~ line 740) *********************
+  Tech = "TAV"
+  SiteID = "ODM"
+  SiteNum = "11455315"
+  VisitReason = "Program update"
+  'Default Flow setup values
+  'Note if using bi-rating start and end must include all EBB and FLOOD bins
+  IsSL = No
+  MinExpStg = 0
+  MaxExpStg = 30
+  MinExpVel = -5
+  MaxExpVel = 6
+  FlowSign = 1
+  Theta = 0 'principle flow direction
+  UpBeamOffset = 0
+  VMPressOffset = 0
+  PS1Offset = 0
+  PS2Offset = 0
+  SondeOffset = 0
+  'default communication setup
+  PSPressPort = 3
+  PSPressAddr = 0
+  PSpress2Port = 5
+  PSpress2Addr = 0
+  'Default rating variables
+  CalcQ = Yes 'change to yes if Q calculations are needed
+  'Area Rating:
+  StgOffset = 0
+  StgCoef = 0
+  StgCoef2 = 0
+  'meanvel rating:
+  VelOffset = 0
+  VelCoef = 0
+  VelCoef2 = 0
+  VelCoef3 = 0
+  UpVelOffset = 0
+  UpVelCoef = 0
+  UpVelCoef2 = 0
+  UpVelCoef3 = 0
+  LowVelOffset = 0
+  LowVelCoef = 0
+  LowVelCoef2 = 0
+  LowVelCoef3 = 0
+  Trans = NAN
+  'Misc settings
+  'AvgRSSIStartBin = StartBin
+  'AvgRSSIEndBin  = EndBin
+  DaysSinceDive = 1575 'CONNECT TO STATION AND USE CURRENT VALUES!
+  LastDive = "11/01/2010" 'CONNECT TO STATION AND USE CURRENT VALUES! May Be issue with dates, enter them through LoggerNet if they populate with strange value
+  '****************Above are the default stations Parameters************************
+  'initialize other important program variables (typically don't need to be changed)
+'  BiRatOK  = False 'Used by program to determin if BiRating can be done (if using CM with Instrument Coords). do not change manually, SET TO FALSE HERE
+'  UseBiRat = False 'flag set BY PROGRAM if both the above are true.  do not change manually, SET TO FALSE HERE
+'  InitialHRV = HighRatVel
+'  InitialLRV = LowRatVel
+  'InitialAdcpSN = 0
+  InitialPS1SN = 0
+  InitialPS2SN = 0
+  WqDead = No
+  WqErrCount = 0
+  Redeploy = True
+  RecBurstFlag = False 
+   'IF this is an uplooker calculating range based on water depth
+  'DucerDepthOffset = 0 'difference between water depth sensor and VM transducer face
+  'RangedBin = 0 'starting point for range calculation   
+     
+  DiveVisit = False
+  'VMPower = Yes
+  'IsSubmersed = False
+  VMBaudRateHi = No 'if yes baudrate is set to 38400, if not then baudrate is set to 9600
+  IsCDMANClosed = Yes 'Default setting is for the existance of a normally closed cdma power relay
+  IsWQNClosed = Yes 'Default setting is for the existance of a normally closed Sonde power relay
+ 'isVMNClosed = Yes 'Default setting for the existance of a normally Closed VM power Relay
+  KeepCDMAon = Yes 'CDMA is initially setup to stay on
+  'UseAutoLastBin = No
+  TrueUpBeamStg = BadDataIndicator
+  TrueVMPressStg = BadDataIndicator
+  TruePS1Stg = BadDataIndicator
+  TruePS2Stg = BadDataIndicator
+  TrueSondeStg = BadDataIndicator
+  HrsCdmaOff = 4
+  CDMAFailure = No
+  Rec1MinFlag = No
+  OneMinCount = 0
+  BadStgFlag = Yes
+  BadVelFlag = Yes
+  BadQFlag = Yes
+'  LowCount = 0 'counter for # of times Ivel is below rating
+'  HighCount = 0 'counter for # of times Ivel is above rating
+'  LowMeas = No 'below rating flag
+'  HighMeas = No 'above rating flag
+  'VMLowMemVal = 0
+  If IsCDMANClosed Then
+    #If LoggerType = CR1000 Then SW12(0) 'turn on telemetery if there is a Normally closed relay present.
+    #ElseIf LoggerType = CR6 Then SW12(1,0)
+    #EndIf
+  Else
+    #If LoggerType = CR1000 Then SW12(1) 'turn on telemetery if there's no NC relay present
+    #ElseIf LoggerType = CR6 Then SW12(1,1)
+    #EndIf
+  EndIf
+  IsCDMAOn = yes
+EndSub
+
+
+
+'____________________________________LastScan Subroutine__________________________________
+'now lets create the LastScan variable for keypad menu
+'Stores current hour and minute in the LastScan Variable
+Sub GetLastScan
+  RealTime (rTime()) 'get real time array
+  If Minute >= 0 AND Minute < 10 Then
+    LastScan = Hour + ":0" + Minute
+  Else
+    LastScan = Hour + ":" + Minute
+  EndIf
+EndSub
+
+'_______________________________ Initialize variables ___________________________________________________
+Sub Initialize
+  VMdataIn = No
+  ScanNo = 0
+  WakeUpVm = No
+  StoreVariablesFlg = No
+  GetVariablesFlg = No
+  VMRestartAttempts = 0
+  Public iCount As Long = 0
+  ResetTable(burst)
+  RecBurstFlag = False
+  GetBurst = Yes
+  SetEXOTimeFlg = No 
+  Redeploy = True
+  WqParamOrder = BadDataIndicator
+  Wipeflag = False
+  WqManualCycle = False
+  OldEXOTime = 0
+  
+
+  WqDate = ""
+  WqTime =""
+  'Public WqNparams As Long
+  WqTempC = 0
+  WqTempF = 0
+  WqSpCond = 0
+  WqTurbFNU = 0
+  WqChlugL = 0
+  WqChlRFU = 0
+  WqDOMgl = 0
+  WqDOSat = 0
+  WqPH = 0
+  WqPHmv = 0
+  WqORP = 0
+  WqDepthFt = 0
+  WqBattV = 0
+  WqBGAugl = 0
+  WqBGArfu = 0
+  WqFDOMrfu = 0
+  WqFDOMqsu = 0
+  WqNH4mgl = 0
+  WqNO3mgl = 0
+  WqCLmgl = 0
+  WqWiperPos = 0
+  WqErrCount = 0
+  WqError = False
+  WqDead = False  
+  'WqDeadCnt = 0 
+End Sub
+
+'______________________________Get System Information_____________________________________
+Sub GetSysInfo
+  Battery (CR1Volts) 'get battery volts
+  SerNum = Status.SerialNumber(1,1)
+  OSVers = Status.OSVersion(1,1)
+  Program = Status.ProgName(1,1)
+  ProgErrors = Status.ProgErrors(1,1)
+  Low12Volts = Status.Low12VCount(1,1)
+  LithBat = Status.LithiumBattery(1,1)
+  SkipScans = Status.SkippedScan(1,1)
+  FreeCFMem = Status.CardBytesFree(1,1)
+EndSub
+
+'__________________________________CDMA Check Subroutine__________________________________
+Sub CdmaCheck
+  Select Case IsCDMANClosed
+  Case Yes'if relay exists
+    If KeepCDMAon = Yes Then 'if want CDMA on
+      #If LoggerType = CR1000 Then SW12(0) 'turn on CDMA
+      #ElseIf LoggerType = CR6 Then SW12(1,0)
+      #EndIf
+      IsCDMAOn = yes
+    Else 'If want CDMA off except for window
+      If TimeIntoInterval(0,60,min) Then
+        #If LoggerType = CR1000 Then SW12(0)'turn on CDMA
+        #ElseIf LoggerType = CR6 Then SW12(1,0)
+        #EndIf
+        IsCDMAOn = yes
+      EndIf
+      If TimeIntoInterval(10,60,min) Then
+        #If LoggerType = CR1000 Then SW12(1)'turn off CDMA
+        #ElseIf LoggerType = CR6 Then SW12(1,1)
+        #EndIf
+        IsCDMAOn = no
+      EndIf
+    EndIf
+  Case no 'if relay does not exist
+    If KeepCDMAon = yes Then 'want CDMA to stay on
+      #If LoggerType = CR1000 Then SW12(1) 'turn on CDMA
+      #ElseIf LoggerType = CR6 Then SW12(1,1)
+      #EndIf
+      IsCDMAOn = yes
+    Else 'want CDMA to turn off except for window
+      If TimeIntoInterval(0,60,min) Then
+        #If LoggerType = CR1000 Then SW12(1)'turn on CDMA
+        #ElseIf LoggerType = CR6 Then SW12(1,1)
+        #EndIf
+        IsCDMAOn = yes
+      EndIf
+      If TimeIntoInterval(10,60,min) Then
+        #If LoggerType = CR1000 Then SW12(0)'turn off CDMA
+        #ElseIf LoggerType = CR6 Then SW12(1,0)
+        #EndIf
+        IsCDMAOn = no
+      EndIf
+    EndIf
+  EndSelect
+  If CycleCdmaPwr = Yes Then
+    If IsCDMANClosed Then
+        #If LoggerType = CR1000 Then SW12(1) 'turn off telemetery if a normally closed relay is present
+        #ElseIf LoggerType = CR6 Then SW12(1,1)
+        #EndIf
+    Else
+      #If LoggerType = CR1000 Then SW12(0) 'turn off telemetery if NC relay is not present
+      #ElseIf LoggerType = CR6 Then SW12(1,0)
+      #EndIf
+    EndIf  'manual cycle power Open the circuit to the CDMA
+    IsCDMAOn = no
+    CycleCdmaPwr = No
+  EndIf
+  LoggernetAddr = Route(4094)
+  If LoggernetAddr = 4094 Then
+    CdmaWorks = yes
+    CdmaScans = 0
+    CDMAFailure = no
+  Else 'cycle power to CDMA
+    CdmaWorks = no
+    CdmaScans = CdmaScans + 1
+    If (CdmaScans >= HrsCdmaOff * (FastLoopInterval * 4)) AND (EventCDMAFlag = No) Then 'Fastloop interval is no of Subscans per 15 min so * 4 is scans per hour
+      If IsCDMANClosed Then
+        #If LoggerType = CR1000 Then SW12(1) 'turn off telemetery if a normally closed relay is present
+        #ElseIf LoggerType = CR6 Then SW12(1,1)
+        #EndIf
+      Else
+        #If LoggerType = CR1000 Then SW12(0) 'turn off telemetery if NC relay is not present
+        #ElseIf LoggerType = CR6 Then SW12(1,0)
+        #EndIf
+      EndIf  'cySW12cle cdma off after 4 hours (Open the Circuit to the CDMA)
+      IsCDMAOn = no
+      CDMAFailure = yes
+      CdmaScans = 0
+    EndIf
+  EndIf
+EndSub
+
+'Set time on EXO
+Sub SetEXOTime
+  'The set time command to the VM Requires leading zeros, so the logger timestamp is split out and leading zeros added if needed
+  RawSetTime = Status.Timestamp 'get latest time from datalogger
+     SplitStr (SplitTime(),RawSetTime," ",6,0) 'take apart the time string
+     Public SendEXOHour As String
+      Public SendEXOMin As String
+     Public SendEXOSec As String
+     Public CalcHour As Float
+     CalcHour = SplitTime(4)
+     CalcHour = CalcHour + 8
+     If CalcHour >= 24 Then CalcHour = CalcHour - 24
+     
+      If CalcHour < 10 Then 'add leading zero to hour
+         SendEXOHour = "0" + CalcHour
+      Else
+         SendEXOHour = CalcHour
+      EndIf
+      If SplitTime(5) < 10 Then
+         SendEXOMin = "0" + SplitTime(5)
+      Else
+         SendEXOMin = SplitTime(5)
+      EndIf
+      If Round(SplitTime(6),0) < 10 Then
+         SendEXOSec = "0" + Round(SplitTime(6),0) 'eliminate fractional seconds
+      Else
+        SendEXOSec = Round(SplitTime(6),0)
+      EndIf
+      EXOTimeString = SendEXOHour + ":" + SendEXOMin + ":" + SendEXOSec 'Reconstruct UTC time string to send to EXO
+      #If (IsWqMax232 = True) AND (WqSerialPort <> ComME) Then
+       #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000,0)
+        #Else
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000)
+        #EndIf 
+      #Else
+        #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000,0)
+        #Else
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000)
+        #EndIf 
+      #EndIf      
+    SerialOut (WqSerialPort,"0" + CHR(13),"?Command",3,10)
+    Delay (1,10,mSec)
+     SerialOut (WqSerialPort,"time " + EXOTimeString + CHR(13) + CHR(10),"OK",3,50)
+    Delay (1,200,mSec)
+    SerialFlush(WqSerialPort)
+    SerialClose(WqSerialPort)
+    SetEXOTimeFlg = False
+End Sub
+#If HasTiltSensor Then
+  Sub TurnOnTilt
+    If UseTltPwrSwitch = Yes Then
+       PortSet(TltSwitchPort,1,1) 'connect sw port to NO relay
+    EndIf
+  EndSub  
+#EndIf
+#If HasTiltSensor Then
+  Sub TurnOFFTilt
+    If UseTltPwrSwitch = Yes Then
+      PortSet(TltSwitchPort,0,1) 'Connect sw port to NO relay
+    EndIf
+  EndSub  
+#EndIf
+'if a tilt sensor is attached then read it
+#If HasTiltSensor Then
+  Sub ReadTiltSensor
+   Dim TLTString As String * 100
+   Dim TLTout(5) As String * 10
+   #If (IsTltMax232 = Yes) AND (TlTSerialPort <> ComMe) Then
+      #If LoggerType = CR6 Then 
+        SerialOpen (TlTSerialPort,9600,19,0,2000,0)'open ADCP PORT at 9600 baud with 2000 byte buffer using format 3
+     #Else
+        SerialOpen (TlTSerialPort,9600,19,0,2000)
+     #EndIf
+   #Else  
+     #If LoggerType = CR6 Then 
+        SerialOpen (TlTSerialPort,9600,3,0,2000,0)'open ADCP PORT at 9600 baud with 2000 byte buffer using format 3
+     #Else
+        SerialOpen (TlTSerialPort,9600,3,0,2000)
+     #EndIf
+   #EndIf  
+   SerialFlush (TlTSerialPort)
+   Delay (1,500,mSec)
+   SerialIn (TLTString,TlTSerialPort,100,&H0D,100)
+   SerialFlush(TlTSerialPort)
+   SerialClose(TlTSerialPort)
+   Call TurnOffTilt
+   SplitStr (TLTout(),TLTString,"P",5,0)
+   TLTheading = TLTout(1)
+   TLTPitch = TLTout(2)
+   TLTroll = TLTout(3)
+   TLTTempC = TLTout(4)
+  End Sub
+#EndIf
+
+'if power switch Is installed Then cycle VM power
+ Sub CycleVMPower
+    Public Banner As String * 100
+    If UseVMPwrSwitch = Yes Then
+        SerialFlush (AdcpPort)
+        'Turn Power on and off to ADCP assuming NC relay
+        PortSet (VMSwitchPort,1 ) 'Power up the Normally closed relay
+        Delay (1,3,Sec)
+        PortSet (VMSwitchPort,0) 'Switch off the relay (power back on the VM)
+        Delay(1,5,Sec)
+        SerialIn (Banner,AdcpPort,500,0,1000)
+        If Len(Banner) <> 0 Then
+          Delay(1,5,Sec)
+          SerialOut (AdcpPort,"Start" + CHR(13) + CHR(10),"",1,0)
+          'send start command
+        EndIf
+        VMRestartAttempts = VMRestartAttempts + 1
+        WakeUpVm = No
+        VmDeadCount = 0 'Wait for VMdeadcntMax to do another restart  
+     EndIf    
+ EndSub
+'_________________________________Turns VM Off if user selected VMPower = false __________________________________________________________________
+'Sub ToggleVMPower
+'  '  If PowerSwitch = True
+'  Select Case IsSubmersed
+'    Case False
+'      If VMPower = True Then
+'        ExitSub
+'      EndIf
+'      If VMPower = False Then
+'        SerialFlush (AdcpPort)
+'        'Turn Power on and off to ADCP
+'        If isVMNClosed Then
+'         PortSet (VMSwitchPort,1) 'assumes NC relay
+'        Else
+'         PortSet (VMSwitchPort,0) 'NO relay
+'        EndIf
+'      EndIf
+'    Case True
+'      If VMPower = True Then
+'        #If LoggerType = CR1000 Then SW12(1)
+'        #ElseIf LoggerType = CR6 Then SW12(1,1)
+'        #EndIf
+'        ExitSub
+'      Else
+'        SerialFlush (AdcpPort)
+'        #If LoggerType = CR1000 Then SW12(0)
+'        #ElseIf LoggerType = CR6 Then SW12(1,0)
+'        #EndIf
+'      EndIf
+'  End Select
+'  '  EndIf
+'EndSub
+
+'----------------------------------------------------------------------------------------------
+'define EXO data locations
+Sub DefineLocs 'tells datalogger where to put the parameters.
+  WqLocDate = t(1)
+  WqLocTime = t(2)
+  WqLocTempC = t(3)
+  WqLocTempF = t(4)
+  WqLocCond = t(5)
+  WqLocTurb = t(6)
+  WqLocDoSat = t(7)
+  WqLocDOmgL = t(8)
+  WqLocDepth = t(9)
+  WqLocBatt = t(10)
+  WqLocpH = t(11)
+  WqLocpHmV = t(12)
+  WqLocORP = t(13)
+  WqLocChlugL = t(14)
+  WqLocChlRFU = t(15)
+  WqLocBGApcRFU = t(16)
+  WqLocBGApcugL = t(17)
+  WqLocFDomRFU = t(18)
+  WqLocFDomQSU = t(19)
+  WqLocNH4 = t(20)
+  WqLocNO3 = t(21)
+  WqLocCL = t(22)
+  WqLocWiperPos = t(23)
+  EndSub
+
+'-----------------------------Parameter check-----Gets the parameter order from serial connected EXO sondes-----
+Sub ParamCheck 'gets the parameter codes from the EXO in whichever order they are being output
+  #If (IsWqMax232 = True) AND (WqSerialPort <> ComME) Then
+       #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000,0)
+        #Else
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000)
+        #EndIf 
+      #Else
+        #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000,0)
+        #Else
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000)
+        #EndIf 
+      #EndIf        
+  SerialOut (WqSerialPort,"0" + CHR(13),"?Command",3,10)
+  Delay (1,10,mSec)
+  SerialOut (WqSerialPort,"para" + CHR(13) + CHR(10),"",1,0)
+  Delay (1,300,mSec)
+  SerialIn (WqIn,WqSerialPort,100,&H0D0A,100)
+  WqIn = Trim(WqIn)
+  SplitStr (WqParamOrder,WqIn,CHR(32),WqNparams,0)
+  SerialFlush(WqSerialPort)
+  SerialClose(WqSerialPort)
+EndSub
+
+' SetDilim -----------Sets the serial connected EXO to comma delimited output----
+Sub SetDelim 'sets the EXO to comma delimited output
+  #If (IsWqMax232 = True) AND (WqSerialPort <> ComME) Then
+        #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000,0)
+        #Else
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000)
+        #EndIf 
+  #Else
+        #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000,0)
+        #Else
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000)
+        #EndIf 
+  #EndIf     
+  SerialOut (WqSerialPort,"0" + CHR(13),"?Command",3,10)
+  Delay (1,10,mSec)
+  SerialOut (WqSerialPort,"setdelim 2" + CHR(13) + CHR(10),"OK",3,50)
+  Delay (1,300,mSec)
+  SerialIn (WqIn,WqSerialPort,100,&H0D0A,100)
+  SerialFlush(WqSerialPort)
+  SerialClose(WqSerialPort)
+EndSub
+
+'----------GetWQ_Serial------Gets a single set of data from the serial connected EXO
+Sub GetWQ_Serial 'gets single data point from EXO
+  #If (IsWqMax232 = True) AND (WqSerialPort <> ComME) Then
+       #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000,0)
+       #Else
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000)
+       #EndIf 
+  #Else
+        #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000,0)
+        #Else
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000)
+        #EndIf 
+  #EndIf      
+  SerialOut (WqSerialPort,"0" + CHR(13),"?Command",3,10)
+  Delay (1,10,mSec)
+  SerialOut (WqSerialPort,"data" + CHR(13) + CHR(10),"",1,0)
+  Delay (1,200,mSec)
+  SerialIn (WqIn,WqSerialPort,100,&H0D0A,100)
+  Erase WqData()
+  WqIn = Trim(WqIn)
+  SplitStr (WqData,WqIn,",",WqNparams,0)
+  SerialFlush(WqSerialPort)
+  SerialClose(WqSerialPort)
+EndSub
+
+'-----------------Parses data from a serial connected EXO ------------------
+Sub ParseData 'Parses data into correct locations
+  If (WqData(WqLocDate) <> NAN) AND (WqData(WqLocDate)<> 0) AND (WqData(WqLocTime)<> OldEXOTime)  Then
+    OldEXOTime = WqData(WqLocTime)
+    WqError = False
+    WqDead = False
+    'WqDeadCnt = 0
+    WqErrCount = 0
+    WQPwrCycleCnt = 0
+  Else
+   WqError = True
+   OldEXOTime = WqData(WqLocTime)
+   Call WQ_Mark_Bad
+   Exit Sub
+  EndIf
+  If WqLocDate > 0 Then WqDate = WqData(WqLocDate)
+  If WqLocTime > 0 Then WqTime = WqData(WqLocTime)
+  If WqLocTempC > 0 Then WqTempC = WqData(WqLocTempC)
+  If WqLocTempF > 0 Then WqTempF = WqData(WqLocTempF)
+  If WqLocCond > 0 Then WqSpCond = WqData(WqLocCond)
+  If WqLocTurb > 0 Then WqTurbFNU = WqData(WqLocTurb)
+  If WqLocDoSat > 0 Then WqDOSat = WqData(WqLocDoSat)
+  If WqLocDOmgL > 0 Then WqDOMgl = WqData(WqLocDOmgL)
+  If WqLocDepth > 0 Then WqDepthFt = WqData(WqLocDepth)
+  If WqLocBatt > 0 Then WqBattV = WqData(WqLocBatt)
+  If WqLocpH > 0 Then WqPH = WqData(WqLocpH)
+  If WqLocpHmV > 0 Then WqPHmv = WqData(WqLocpHmV)
+  If WqLocORP > 0 Then WqORP = WqData(WqLocORP)
+  If WqLocChlugL > 0 Then WqChlugL = WqData(WqLocChlugL)
+  If WqLocChlRFU > 0 Then WqChlRFU = WqData(WqLocChlRFU)
+  If WqLocBGApcRFU > 0 Then WqBGArfu = WqData(WqLocBGApcRFU)
+  If WqLocBGApcugL > 0 Then WqBGAugl = WqData(WqLocBGApcugL)
+  If WqLocFDomRFU > 0 Then WqFDOMrfu = WqData(WqLocFDomRFU)
+  If WqLocFDomQSU > 0 Then WqFDOMqsu = WqData(WqLocFDomQSU)
+  If WqLocNH4 > 0 Then WqNH4mgl = WqData(WqLocNH4)
+  If WqLocNO3 > 0 Then WqNO3mgl = WqData(WqLocNO3)
+  If WqLocCL > 0 Then WqCLmgl = WqData(WqLocCL)
+  If WqLocWiperPos > 0 Then WqWiperPos = WqData(WqLocWiperPos)
+EndSub
+
+'-------------------DefineParamsOrder----Automatically determines the order of the incoming serial connected EXO data ------
+Sub DefineParamsOrder 'used to automatically determine which order parameters are coming in
+  t(1) = FindSpa (DateCode,DateCode,1,WqParamOrder())
+  t(2) = FindSpa (TimeCode,TimeCode,1,WqParamOrder())
+  t(3) = FindSpa (TempCCode,TempCCode,1,WqParamOrder())
+  t(4) = FindSpa (TempFCode,TempFCode,1,WqParamOrder())
+  t(5) = FindSpa (CondCode,CondCode,1,WqParamOrder())
+  t(6) = FindSpa (TurbCode,TurbCode,1,WqParamOrder())
+  t(7) = FindSpa (DoSatCode,DoSatCode,1,WqParamOrder())
+  t(8) = FindSpa (DOmgLCode,DOmgLCode,1,WqParamOrder())
+  t(9) = FindSpa (DepthCode,DepthCode,1,WqParamOrder())
+  t(10) = FindSpa (BattCode,BattCode,1,WqParamOrder())
+  t(11) = FindSpa (pHCode,pHCode,1,WqParamOrder())
+  t(12) = FindSpa (pHmVCode,pHmVCode,1,WqParamOrder())
+  t(13) = FindSpa (ORPCode,ORPCode,1,WqParamOrder())
+  t(14) = FindSpa (ChlugLCode,ChlugLCode,1,WqParamOrder())
+  t(15) = FindSpa (ChlRFUCode,ChlRFUCode,1,WqParamOrder())
+  t(16) = FindSpa (BGApcRFUCode,BGApcRFUCode,1,WqParamOrder())
+  t(17) = FindSpa (BGApcugLCode,BGApcugLCode,1,WqParamOrder())
+  t(18) = FindSpa (FDomRFU,FDomRFU,1,WqParamOrder())
+  t(19) = FindSpa (FDomQSU,FDomQSU,1,WqParamOrder())
+  t(20) = FindSpa (NH4Code,NH4Code,1,WqParamOrder())
+  t(21) = FindSpa (NO3Code,NO3Code,1,WqParamOrder())
+  t(22) = FindSpa (CLCode,CLCode,1,WqParamOrder())
+  t(23) = FindSpa (WiperPos,WiperPos,1,WqParamOrder())
+  
+EndSub
+
+' -------------------SetBurst-------if collecting burst then Setup EXO for burst-----
+Sub SetBurst 'sets to run and receives string 
+  #If (IsWqMax232 = True) AND (WqSerialPort <> ComME) Then
+       #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000,0)
+        #Else
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000)
+        #EndIf 
+  #Else
+        #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000,0)
+        #Else
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000)
+        #EndIf 
+  #EndIf     
+    SerialOut (WqSerialPort,"0" + CHR(13),"?Command",3,10)
+    Delay (1,20,mSec)
+    #If WqBaud = 9600 Then
+      SerialOut (WqSerialPort,"setperiod 1170" + CHR(13) + CHR(10),"OK",3,50)
+    #Else
+      SerialOut (WqSerialPort,"setperiod 1000" + CHR(13) + CHR(10),"OK",3,50)
+    #EndIf
+    Delay (1,200,msec)
+    SerialOut (WqSerialPort,"#" + CHR(13),"#" + CHR(13),3,100)
+    SerialOut (WqSerialPort,"run" + CHR(13),"run" + CHR(13),3,10) 'Starts the Wq sampling at 1Hz
+  Delay (1,1,Sec)
+End Sub
+Sub GetBurstArray 'Gets 30 second burst from sonde and stores in burst array
+  BurstCount = 0
+  Dim Lcount As Long
+  For Lcount = 1 To 30
+      SerialIn (BurstIn,WqSerialPort,100,"#",150)
+      Delay(1,50,mSec)
+      If BurstIn = "" Then
+         WqError = true
+         Icount = 1
+         Exit sub 
+      EndIf
+      BurstIn = Replace (BurstIn,"-nan","-9999")
+      SplitStr (BurstArray(iCount,1),BurstIn,CHR(32),17,0)'parse the raw string and store in burst array (process after loop)
+      Delay(1,20,mSec)
+      Erase(BurstIn)
+      SerialFlush(WqSerialPort)
+      iCount = iCount+1 
+      #If WqBaud = 9600 Then
+         Delay(1,1100,mSec)'needs a little extra time at 9600 baud
+      #Else
+         Delay (1,930,mSec)
+      #EndIf    
+        Next Lcount
+      SerialClose(WqSerialPort)
+End Sub
+ 
+ '------ParseBurst---------if collecting burst with Wq then parse the burst------------------------
+Sub ParseBurst 'Parses burst data into correct locations
+  If (BurstData(WqLocDate) <> NAN) AND (BurstData(WqLocDate) <> 0) Then
+    WqError = False
+    WqDead = False
+    WqErrCount = 0
+    'WqDeadCnt = 0
+  Else
+    WqError = True
+  EndIf
+  If WqLocDate > 0 Then BurstDate = BurstData(WqLocDate)
+  If WqLocTime > 0 Then BurstTime = BurstData(WqLocTime)
+  If WqLocTempC > 0 Then BurstTempC = BurstData(WqLocTempC)
+  If WqLocTempF > 0 Then BurstTempF = BurstData(WqLocTempF)
+  If WqLocCond > 0 Then BurstSpCond = BurstData(WqLocCond)
+  If WqLocTurb > 0 Then BurstTurbFNU = BurstData(WqLocTurb)
+  If WqLocDoSat > 0 Then BurstDOSat = BurstData(WqLocDoSat)
+  If WqLocDOmgL > 0 Then BurstDOmgL = BurstData(WqLocDOmgL)
+  If WqLocDepth > 0 Then BurstDepthFt = BurstData(WqLocDepth)
+  If WqLocBatt > 0 Then BurstBattV = BurstData(WqLocBatt)
+  If WqLocpH > 0 Then BurstpH = BurstData(WqLocpH)
+  If WqLocpHmV > 0 Then BurstpHmV = BurstData(WqLocpHmV)
+  If WqLocORP > 0 Then BurstORP = BurstData(WqLocORP)
+  If WqLocChlugL > 0 Then BurstChlugL = BurstData(WqLocChlugL)
+  If WqLocChlRFU > 0 Then BurstChlRFU = BurstData(WqLocChlRFU)
+  If WqLocBGApcRFU > 0 Then BurstBGApcRFU = BurstData(WqLocBGApcRFU)
+  If WqLocBGApcugL > 0 Then BurstBGApcugL = BurstData(WqLocBGApcugL)
+  If WqLocFDomRFU > 0 Then BurstFdomRFU = BurstData(WqLocFDomRFU)
+  If WqLocFDomQSU > 0 Then BurstFDomQSU = BurstData(WqLocFDomQSU)
+  If WqLocNH4 > 0 Then BurstNH4Amgl = BurstData(WqLocNH4)
+  If WqLocNO3 > 0 Then BurstNO3Nmgl = BurstData(WqLocNO3)
+  If WqLocCL > 0 Then BurstCLmgl = BurstData(WqLocCL)
+  If WqLocWiperPos > 0 Then BurstWiperPos = BurstData(WqLocWiperPos)
+EndSub
+ 
+
+'-------WipWQ-----Wipe the serial connected EXO sensors----------------------------------------
+Sub WipeWq 'tells Wq to wipe
+  #If (IsWqMax232 = True) AND (WqSerialPort <> ComME) Then
+       #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000,0)
+        #Else
+          SerialOpen (WqSerialPort,WqBaud,19,0,2000)
+        #EndIf 
+  #Else
+        #If LoggerType = CR6 Then
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000,0)
+        #Else
+          SerialOpen (WqSerialPort,WqBaud,0,0,2000)
+        #EndIf 
+  #EndIf     
+  SerialOut (WqSerialPort,"0" + CHR(13),"?Command",3,10)
+  Delay(1,10,mSec)
+  SerialOut (WqSerialPort,"twipeb" + CHR(13) + CHR(10),"",1,0)
+  SerialIn (WqIn,WqSerialPort,100,&H0D0A,100)
+  SplitStr (WqDelay,WqIn,"",1,0)
+'  If WqDelay > -1 AND WqDelay <> NAN Then
+'    Timer(1,Sec,2)
+'    Do
+'      TempLong = Timer (1,Sec,4)
+'    Loop Until TempLong >= (WqDelay + 1)
+'  EndIf
+EndSub
+'if operator sets the manual power cycle flag then cycle WQ power
+
+
+'----------CycleWQPower-----------Switches off the WQ power until the next Scan ------------
+Sub CycleWQPower
+  #If LoggerType = CR1000 Then
+         If IsWQNClosed Then
+         PortSet(WqSwitchPort,1)
+       Else
+         PortSet(WqSwitchPort,0)
+       EndIf 'is normally closed
+   #ElseIf LoggerType = CR6 Then
+    If  UseSW12_2_forWQ Then 'using SW12 port 2
+      SW12(2,0)
+    Else
+      If IsWQNClosed Then
+        PortSet(WqSwitchPort,1)
+      Else
+        PortSet(WqSwitchPort,0)
+      EndIf
+    EndIf     
+  #EndIf
+  WQPwrCycleCnt = 0
+  WqManualCycle = False
+  Delay(1,15,sec)'let exo warm up
+  ErrorEvent = "Cycle Sonde Power"
+  Redeploy = true
+EndSub
+
+'--------WQ_Mark_Bad-------- If no incoming data mark it bad    
+Sub WQ_Mark_Bad 'if WQerror then Zero all wqdata
+    WqDate = ""
+    WqTime =""
+    'Public WqNparams As Long
+    WqTempC = BadDataIndicator
+    WqTempF = BadDataIndicator
+    WqSpCond = BadDataIndicator
+    WqTurbFNU = BadDataIndicator
+    WqChlugL = BadDataIndicator
+    WqChlRFU = BadDataIndicator
+    WqDOMgl = BadDataIndicator
+    WqDOSat = BadDataIndicator
+    WqPH = BadDataIndicator
+    WqPHmv = BadDataIndicator
+    WqORP = BadDataIndicator
+    WqDepthFt = BadDataIndicator
+    WqBattV = BadDataIndicator
+    WqBGAugl = BadDataIndicator
+    WqBGArfu = BadDataIndicator
+    WqFDOMrfu = BadDataIndicator
+    WqFDOMqsu = BadDataIndicator
+    WqNH4mgl = BadDataIndicator
+    WqNO3mgl = BadDataIndicator
+    WqCLmgl = BadDataIndicator
+    WqWiperPos = BadDataIndicator
+EndSub
+
+'___________________New Stage Subroutine______________________________
+Sub GetStage
+'  If IsWorkhorse Then
+'    VMpressure = WHpressure 'It's a workhorse and there is no "VMPress" from CM
+'  EndIf
+  Call GetPSPress 'Get SDI-12 data from PS1
+  Call GetPsPress2 'Get SDI-12 data from PS2
+  'UpBeamStg = VMupBeam + UpBeamOffset
+  VMPressStg = VMpressure + VMPressOffset
+  PS1Stg = PsPress1Stg(1) + PS1Offset
+  PS2Stg = PSpress2Stg(1) + PS2Offset
+  SondeStg = WqDepthFt + SondeOffset
+  Select Case PrimeStageSource
+   Case UPbeam 'User selected Upbeam to be used as Stage
+      If VMdataIn = Yes Then 'If there are data coming in and they are valid
+        StagePrime = UpBeamStg
+        BadStgFlag = No
+      Else 'otherwise flag data as bad
+        BadStgFlag = Yes
+        StagePrime = BadDataIndicator
+      EndIf
+  Case VMpress 'User Selected VM Pressure sensor to be used as stage
+    If (VMdataIn = Yes AND VMpressure <> NAN) Then 'If there are data coming in and they are valid
+      StagePrime = VMPressStg
+      BadStgFlag = No
+    Else ' Otherwise flag data as bad
+      BadStgFlag = Yes
+      StagePrime = BadDataIndicator
+    EndIf
+  Case PSpress 'User selected Pressure sensor 1 to be used as stage
+    If PSPressDataIn = Yes Then
+      StagePrime = PS1Stg
+      BadStgFlag = No
+    Else ' Otherwise flag data as bad
+      BadStgFlag = Yes
+      StagePrime = BadDataIndicator
+    EndIf
+  Case PSpress2 'User selected Pressure Sensor 2 to be used as stage
+    If PSpress2DataIn = Yes Then 'if there are data then
+      StagePrime = PS2Stg
+      BadStgFlag = No
+    Else 'otherwise flag the data as bad
+      BadStgFlag = Yes
+      StagePrime = BadDataIndicator
+    EndIf
+  'need all sondes checked for stage 
+   Case WqPress 'User selected YSI for Stage
+    'Get YSI Stage Data
+        If WqError = No Then 'If there are data then
+          StagePrime = SondeStg
+          BadStgFlag = No
+        Else 'Otherwise flag the data as bad
+          BadStgFlag = Yes
+          StagePrime = BadDataIndicator
+        EndIf
+  EndSelect
+
+  Select Case SecndStageSource
+  Case UPbeam 'User selected Upbeam to be used as Stage
+    If (VMdataIn = Yes AND VMupBeam <> NAN) Then 'If there are data coming in and they are valid
+      StageSecnd = UpBeamStg
+    Else 'otherwise flag data as bad
+      StageSecnd = BadDataIndicator
+    EndIf
+  Case VMpress 'User Selected VM Pressure sensor to be used as stage
+    If (VMdataIn = Yes AND VMpressure <> NAN) Then 'If there are data coming in and they are valid
+      StageSecnd = VMPressStg
+    Else ' Otherwise flag data as bad
+      StageSecnd = BadDataIndicator
+    EndIf
+  Case PSpress 'User selected Pressure sensor 1 to be used as stage
+    If PSPressDataIn = Yes Then
+      StageSecnd = PS1Stg
+    Else ' Otherwise flag data as bad
+      StageSecnd = BadDataIndicator
+    EndIf
+  Case PSpress2 'User selected Pressure Sensor 2 to be used as stage
+    If PSpress2DataIn = Yes Then 'if there are data then
+      StageSecnd = PS2Stg
+    Else 'otherwise flag the data as bad
+      StageSecnd = BadDataIndicator
+    EndIf
+  Case WqPress 'User selected YSI for Stage
+        'Get YSI Stage Data
+        If WqError = No Then 'If there are data then
+          StageSecnd = SondeStg
+        Else 'Otherwise flag the data as bad
+          StageSecnd = BadDataIndicator
+        EndIf
+  EndSelect
+
+  'now check to make sure primary stage is within range
+  'this is the stage used to calculate flows
+  If BadStgFlag = no Then 'if stage data is still good then...
+    'lets check to see if within the expected range
+    If (StagePrime > MaxExpStg) OR (StagePrime < MinExpStg) Then 'if out of range
+      BadStgFlag = yes 'set bad stage flag to true
+      StagePrime = BadDataIndicator
+      BadStgCount = BadStgCount + 1 'incriment bad stage counter
+      '        StgLoop = 0 'initialize variable for Stg Filter below
+    Else 'if stage is still good
+      '        Call StgFilter 'call secondary stage filter
+    EndIf
+  Else 'if Bad Stage Flag was already true (from above code)
+    BadStgCount = BadStgCount + 1 'incriment bad stage counter
+    '      StgLoop = 0 'initialize variable for Stg Filter below
+  EndIf
+  'which stage insturment type being used will be stored in the output files
+  'StgSelect = SelStgPrime + ":" + SelStgSecnd 'indicates stage type being used
+EndSub
+
+Sub TrueStage
+  'Now lets get correct offsets for each instrument to produce an accurate "Stage"
+  If TrueUpBeamStg = BadDataIndicator AND TrueVMPressStg = BadDataIndicator AND TruePS1Stg = BadDataIndicator AND TruePS2Stg = BadDataIndicator AND TrueSondeStg = BadDataIndicator Then
+    ExitSub
+  EndIf
+  If ((TrueUpBeamStg <> BadDataIndicator) AND (VMupBeam <> BadDataIndicator)) Then ' if user types in a reference stage for Upbeam then
+    UpBeamOffset = TrueUpBeamStg-VMupBeam ' get offset for UpBeam
+  EndIf 'Otherwise do nothing
+  If ((TrueVMPressStg <> BadDataIndicator) AND (VMpressure <> BadDataIndicator)) Then 'if user types in a reference stage VM Pressure sensor then
+    VMPressOffset = TrueVMPressStg-VMpressure 'get offset for VM pressure sensor
+  EndIf 'otherwise do nothing
+  If ((TruePS1Stg <> BadDataIndicator) AND (PsPress1Stg(1) <> BadDataIndicator)) Then 'if user types in a reference stage for Pressure sensor1 then
+    PS1Offset = TruePS1Stg-PsPress1Stg(1) 'Get offset for pressure sensor 1
+  EndIf 'Otherwise do nothing
+  If ((TruePS2Stg <> BadDataIndicator) AND (PSpress2Stg(1) <> BadDataIndicator)) Then 'if user types in a reference stage for pressure sensor2 then
+    PS2Offset = TruePS2Stg - PSpress2Stg(1)
+  EndIf 'Otherwise do nothing
+  If ((TrueSondeStg <> BadDataIndicator) AND (WqDepthFt <> BadDataIndicator)) Then 'if user types in a reference stage for YSI then
+        SondeOffset = TrueSondeStg - WqDepthFt
+  EndIf   
+  'Otherwise do nothing
+EndSub
+
+'______________Stage Difference Routine________________________
+'Used to produce a graph in RTMC to see the difference between stage values at a finer scale, indication of drifting
+Sub StageDiff
+  StgDiff = StagePrime - StageSecnd
+  Round (StgDiff,3)
+EndSub
+
+'_____________Camera Battery Bank Voltage_______________________________________
+'Used ro read acoustic camera battery bank voltage
+Sub CamBatBnk
+  VoltDiff (CamBatBnkVolt,1,mV5000,CamBatBnkCom,True,0,60,0.01,0)
+EndSub
+
+'_____________________________________PsPressure Subroutine_______________________________
+Sub GetPsPress
+  Select Case PSPressPort
+  Case 3
+    SDI12Recorder (PsPress1Stg(),PS1Com3,PSPressAddr,"M!",1.0,0)
+  Case 5
+    SDI12Recorder (PsPress1Stg(),PS1Com5,PSPressAddr,"M!",1.0,0)
+  EndSelect
+  If PsPress1Stg(1) = NAN Then 'if no data commes in
+    PSPressDataIn = No
+  Else 'if there is PS Pressure data
+    PSPressDataIn = Yes
+  EndIf
+EndSub
+
+'__________________________________Pressure Sensor 2 Subroutine______________________________
+Sub GetPSpress2
+  Select Case PSpress2Port
+  Case 3
+    SDI12Recorder (PSpress2Stg(),PS2Com3,PSpress2Addr,"M!",1.0,0)
+  Case 5
+    SDI12Recorder (PSpress2Stg(),PS2Com5,PSpress2Addr,"M!",1.0,0)
+  EndSelect
+  If PSpress2Stg(1) = NAN Then 'if no data comes in
+    PSpress2DataIn = No
+  Else 'if there is Float Recorder data
+    PSpress2DataIn = Yes
+  EndIf
+EndSub
+
+'__________________________Get Instrument Serial Numbers_________________
+Sub GetSN
+  If (ModDay > 79270) AND (ModDay < 79390) AND RecCalibData = False Then 'if 2200hrs + 1-3 minutes and not Calbrating then get serial numbers of all
+    Select Case PSPressPort
+    Case 3
+      SDI12Recorder (PS1SN,PS1Com3,PSPressAddr,"I!",1.0,0) '"I!" command gets brand, model, serial number, firmware, etc. from pressure sensors.
+      If PS1SN <> InitialPS1SN Then
+        NewPS1 = True
+        InitialPS1SN = PS1SN 'Set the new sn to initial
+      Else
+        NewPS1 = False
+      EndIf  'didn't parse the string to only retrieve S/N because it's useful to know the brand and model.
+    Case 5
+      SDI12Recorder (PS1SN,PS1Com5,PSPressAddr,"I!",1.0,0) '"I!" command gets brand, model, serial number, firmware, etc. from pressure sensors.
+      If PS1SN <> InitialPS1SN Then
+        NewPS1 = True
+        InitialPS1SN = PS1SN 'Set the new sn to initial
+      Else
+        NewPS1 = False
+      EndIf                                      'didn't parse the string to only retrieve S/N because it's useful to know the brand and model.
+    EndSelect
+    Select Case PSpress2Port
+    Case 3
+      SDI12Recorder (PS2SN,PS2Com3,PSpress2Addr,"I!",1.0,0) '"I!" command gets brand, model, serial number, firmware, etc. from pressure sensors.
+      If PS2SN <> InitialPS2SN Then
+        NewPS2 = True
+        InitialPS2SN = PS2SN 'Set the new sn to initial
+      Else
+        NewPS2 = False
+      EndIf                                     'didn't parse the string to only retrieve S/N because it's useful to know the brand and model.
+    Case 5
+      SDI12Recorder (PS2SN,PS2Com5,PSpress2Addr,"I!",1.0,0) '"I!" command gets brand, model, serial number, firmware, etc. from pressure sensors.
+      If PS2SN <> InitialPS2SN Then
+        NewPS2 = True
+        InitialPS2SN = PS2SN 'Set the new sn to initial
+      Else
+        NewPS2 = False
+      EndIf                                     'didn't parse the string to only retrieve S/N because it's useful to know the brand and model.
+    EndSelect
+  EndIf 'end if midnight
+EndSub
+
+'____________________________________Calculates interval for filter loops
+Sub CalcLoopInterval
+  Dim UnitMult As Float
+  Select Case ScanUnit
+  Case = 1
+    UnitMult = 60000  'milliseconds in minute
+  Case = 2
+    UnitMult = 60     'seconds in minute
+  Case = 3
+    UnitMult = 1    'minutes in minute
+  Case = 4
+    UnitMult = 0.0166666666  'hours in minute (ok we'll probably never use this scan rate but just to be safe!!!!)
+  Case = 5
+    UnitMult = 0.0006944444  'days in minute (Only if we're measuring lake evaportation!!!!)
+  EndSelect
+  LoopInterval = (UnitMult/ScanRate) * 15 'number of scans in 15 minutes
+
+  Select Case FastScanUnit
+  Case = 1
+    UnitMult = 60000  'milliseconds in minute
+  Case = 2
+    UnitMult = 60     'seconds in minute
+  Case = 3
+    UnitMult = 1    'minutes in minute
+  Case = 4
+    UnitMult = 0.0166666666  'hours in minute (ok we'll probably never use this scan rate but just to be safe!!!!)
+  Case = 5
+    UnitMult = 0.0006944444  'days in minute (Only if we're measuring lake evaportation!!!!)
+  EndSelect
+  FastLoopInterval = (UnitMult/FastScanRate) * 15 'number of scans in 15 minutes
+EndSub
+
+'__________________________Visits Subroutine___________________________
+' This subroutine is simply to trigger flags and create counters for different site visit reasons.
+' This will allow for "Days Since" counters on RTMC to more easily recognize when service is due.
+Sub Visits
+  '____Dive Visit____
+  If DaysSinceDive = NAN Then DaysSinceDive = NAN AND LastDive = NAN
+  If DiveVisit = True Then
+    DiveTimeStamp = Status.TimeStamp(1,1)
+    DaysSinceDive = 0
+    Delay (1,2,Sec)
+    LastDive = Left(DiveTimeStamp,10)
+  ElseIf (ModDay > 79080) AND (ModDay < 79200) AND DiveVisit = False Then
+    DaysSinceDive = DaysSinceDive + 1
+  EndIf
+EndSub
+
+'get argonaut data
+Sub GetArgdata
+  Dim VelZero As Boolean
+  'error counters are zeroed in the zeroerrcnt sub at midnight
+'  If IfTime (0,1440,Min) Then  SerialErr= 0 'initialize at midnight
+'  If IfTime (0,1440,Min) Then BadVelCount = 0 'initialize counter
+  Call ZeroVMArrays
+  BadVelFlag = Yes 'set to true before getting data
+  'now we read in the ASCII string from the argonaut
+  'ArgSL 500KHz Serial Data
+  'firmware = 11.6
+  'Output format = English
+  '1\4                    20\8   28\8   36\8                   62\4  66\4   70\4 78\7   85\6  91\6                 112\7      119\11         139\6  145\6  151\7
+  'YEAR==MO=DA=HR=MN=SE===V1VELO==V2VELO==UPVELO=SEV1VE=SEV2VE=SEUPV=SIG=SIG=SIG=%GD=HEADING=ROLL=Pitch=SDHD=SDPI=SDRO==TEMPF======PRESS==SDPRESS=VOLTS==START===END=NOI=NOI=NOI
+  '2007 08 20 09 11 49   0.000   0.000  -1.000 0.837 0.837 0.000   0   0   3   0  218.9   0.8   0.8  0.1  0.0  0.0  79.92      0.210    0.003  13.4  16.4   16.4  34  26  23
+  VelZero = False
+  buffer = "" 'flush buffer...
+  SerialIn (buffer,AdcpPort,500,0,1000)'get serial data from Com1)
+  VMBufLen = Len(buffer) 'get length of buffer
+  VMDataValid = Mid(buffer,1,2)
+  If VMBufLen <> 0 AND VMDataValid = 20 Then 'if there is data in the buffer, then probably good to go...
+    VMdataIn = Yes
+    'split into first line and then bin lines
+    SplitStr(DataLines,buffer,CHR(10),11,7)
+    'ArgDataIn = Yes 'initialize flag to good
+    VMV1vel = Mid(buffer,20,8)
+    VMV2vel = Mid(buffer,28,8)
+    VMV3vel = Mid(buffer,36,8)
+    VMV1sig = Mid(buffer,62,4)
+    VMV2sig = Mid(buffer,66,4)
+    VMV3Sig = Mid(buffer,70,4)
+    VMHeading = Mid(buffer,78,7)
+    VMroll = Mid(buffer,85,6)
+    VMpitch = Mid(buffer,91,6)
+    VMTempF = Mid(buffer,112,7)
+    VMpressure = Mid(buffer,119,11)
+    VMVolts =  Mid(buffer,139,6)
+    VMStartDist = Mid(buffer,145,6)
+    VMEndDist = Mid(buffer,151,7)
+    VMSignal = (VMV1sig + VMV2sig + VMV3Sig) / 3 'calc average signal from Three beams
+    VMtempC = (VMTempF -32) * .555556
+    'check to see if ArgVel is in range
+    If (VMV1vel = 0) AND (VMV2vel = 0) Then VelZero = True
+    NumBins = 0
+    Dim J As Long
+    'check to see if data in bin lines
+    'beam data
+    '#    V1       V2     V3    SDV1 SDV2 SDV3 S1  S2  S3
+    '1  -1132   -421  -1301 113  99  34  44  45  44
+    '1\2 bin number
+    '
+    For J = 2 To 11
+      'take apart the bin lines
+      If DataLines(J) <> "" Then
+        V1(J-1) = Mid(DataLines(J),3,8)
+        V2(J-1) = Mid(DataLines(J),11,8)
+        V3(J-1) = Mid(DataLines(J),19,8)
+        V1std(J-1) = Mid(DataLines(J),27,6)
+        V2std(J-1) = Mid(DataLines(J),33,6)
+        V3std(J-1) = Mid(DataLines(J),39,6)
+        V1Sig(J-1) = Mid(DataLines(J),45,4)
+        V2Sig(J-1) = Mid(DataLines(J),49,4)
+        V3Sig(J-1) = Mid(DataLines(J),53,4)
+        NumBins = NumBins + 1
+      EndIf
+    Next J
+    If (NumBins = 0) AND (VMDataValid = 20) Then 'We have the Single Bin
+      NumBins = 1  
+    EndIf
+    IndexVel = (-SIN(Theta) * VMV1vel) + (COS(Theta) * VMV2vel)
+    IndexVel = IndexVel * FlowSign 'correct for flow sign
+    If (IndexVel >= MinExpVel) AND (IndexVel <= MaxExpVel) AND (VelZero = False) Then 'if ArgVel is in range, then
+      BadVelFlag = No
+      'Call VelFilter 'call secondary velocity filter
+    Else 'if vel not in range...
+      BadVelFlag = Yes
+      BadVelCount = BadVelCount + 1
+      'VelLoop = 0 'initialize variable for Vel Filter below
+    EndIf
+    If IsSL = True Then
+      VMUpBeam = VMV3vel
+      Else
+      VMUpBeam = "NAN"
+    EndIf
+  Else 'otherwise, if no data in buffer, or serial error then
+    VMSerialErr = VMSerialErr + 1
+    BadVelFlag = Yes
+    'ArgDataIn = No
+    VMdataIn = No
+    BadVelCount = BadVelCount + 1
+    ' VelLoop = 0 'initialize variable for Vel Filter below
+  EndIf
+  'If BadVelFlag = yes Then CallTable SysInfo
+  SerialFlush(AdcpPort)'flush serial port
+EndSub
+
+
+
+
+Function Ftime (TimeIn As String * 25) As String * 25 'converts datalogger time string into MM/DD/YYYY HH:MM:SS
+ 'RawTime = Public.Timestamp
+      
+      SplitStr (FSplitTime(),TimeIn," ",6,0)
+      Dim SendMonth As String
+      Dim SendDay As String
+      Dim SendHour As String
+      Dim SendMin As String
+      Dim SendSec As String
+      Dim SendYear As String
+      
+      If FSplitTime(1) < 10 Then 
+        SendMonth = "0" + FSplitTime(1)
+      Else
+         SendMonth = FSplitTime(1)
+      EndIf   
+      If FSplitTime(2) < 10 Then
+          SendDay = "0" + FSplitTime(2)
+      Else
+          SendDay = FSplitTime(2) 
+      EndIf
+      If FSplitTime(4) < 10 Then
+         SendHour = "0" + FSplitTime(4)
+      Else
+         SendHour = FSplitTime(4)
+      EndIf
+      If FSplitTime(5) < 10 Then
+         SendMin = "0" + FSplitTime(5)
+      Else
+         SendMin = FSplitTime(5)
+      EndIf
+   
+      If Round(FSplitTime(6),0) < 10 Then
+         SendSec = "0" + Round(FSplitTime(6),0)
+      Else
+        SendSec = Round(FSplitTime(6),0)
+      EndIf   
+      SendYear = Right(FSplitTime(3),4)
+      ftime = SendMonth + "/" + SendDay + "/" + SendYear + " " + SendHour + ":" + SendMin + ":" + SendSec 
+End Function
+
+
+Sub SubCalcQ 'calculate discharge
+  If CalcQ = Yes Then ' if Q calculations are wanted
+    If Trans = BadDataIndicator Then 'if there is no valid transition point
+      'then use standard velocity rating info for meanvel calculation
+      MeanVel = VelOffset + (VelCoef * IndexVel) + (VelCoef2 * IndexVel^2) + (VelCoef3 * IndexVel^3)
+    Else 'if there is a valid transition point
+      If IndexVel >= Trans Then 'if iVel is greater or equal to the transition point
+        'then use upper meanvel rating information
+        MeanVel = UpVelOffset + (UpVelCoef * IndexVel) + (UpVelCoef2 * IndexVel^2) + (UpVelCoef3 * IndexVel^3)
+      ElseIf IndexVel <= Trans Then 'if iVel is less than the transition point
+        'then use lower meanvel rating information
+        MeanVel = LowVelOffset + (LowVelCoef * IndexVel) + (LowVelCoef2 * IndexVel^2) + (LowVelCoef3 * IndexVel^3)
+      EndIf
+    EndIf
+    If BadVelFlag = False AND  BadStgFlag = False Then 'Ok, now if both iVel and Stage are still good, then
+      BadQFlag = False 'then Q data is still good
+      'user enters rating values with keypad
+      Area = StgOffset + (StgCoef*StagePrime) + (StgCoef2 * StagePrime^2)
+      'check to see if iVel data is good
+      Qcfs = Area * MeanVel 'calculate Q
+      If Qcfs = 0 Then 'if calculated Q is exactly zero
+        'then don't believe it (probably no rating data entered)
+        BadQFlag = True 'Q data is now bad, so don't average it
+        BadQCount = BadQCount + 1 'Q is now bad
+        Qcfs = BadDataIndicator
+      EndIf
+    Else 'if stage or velocity were bad, then
+      BadQFlag = True 'Q data is now bad, so don't average it
+      BadQCount = BadQCount + 1 'and increment counter
+      Qcfs = BadDataIndicator
+    EndIf
+  Else ' if Q calculations are not wanted (CalcQ = no)
+    BadQCount = 0
+    Area = NAN
+    MeanVel = NAN
+    Qcfs = 0
+    BadQFlag = True
+  EndIf
+EndSub
+
+'____________________________________Zero all Velocity Meter Arrays__________________________
+Sub ZeroVMArrays
+  
+  Dim ZeroCnt As Long
+  For ZeroCnt = 1 To 10
+    V1(ZeroCnt) = NAN
+    V2(ZeroCnt) = NAN
+    V3(ZeroCnt) = NAN
+    V1Sig(ZeroCnt) =0
+    V2Sig(ZeroCnt) = 0
+    V3Sig(ZeroCnt) = 0
+    V1std(ZeroCnt) = NAN
+    V2std(ZeroCnt) = NAN
+    V3std(ZeroCnt) = NAN
+    DataLines(ZeroCnt) = ""
+  Next ZeroCnt
+  DataLines(11) = ""
+  
+EndSub
+
+'----------------------------------------------------
+'Read variables in from USR file (preserved variables)
+Sub ReadVariables
+  Public PreserveHandle As Long
+  Public PreserveFileLen As Long
+  Public Closeerror
+  PreserveHandle = FileOpen("USR:VariableStore.txt","r",-1) 'open the preserve variable file here
+  Delay (1,30,mSec)
+  PreserveFileLen = FileRead(PreserveHandle,PreserveFile,500)
+  Closeerror = FileClose(PreserveHandle)
+  If PreserveFileLen = 0 Then
+'    'set error txt
+     ExitSub
+  EndIf
+   Dim InVar(22) As String
+   SplitStr(InVar,PreserveFile,",",22,0)
+   UpBeamOffset = InVar(1)
+   VMPressOffset = InVar(2)
+   PS1Offset = InVar(3)
+   PS2Offset = InVar(4)
+   SondeOffset = InVar(5)
+   CalcQ = InVar(6) 
+   StgOffset = InVar(7)
+   StgCoef = InVar(8)
+   StgCoef2 = InVar(9)
+   VelOffset = InVar(10)
+   VelCoef = InVar(11)
+   VelCoef2 = InVar(12)  
+   VelCoef3 = InVar(13)
+   UpVelOffset = InVar(14)
+   UpVelCoef = InVar(15)
+   UpVelCoef2 = InVar(16)
+   UpVelCoef3 = InVar(17)
+   LowVelOffset = InVar(18)
+   LowVelCoef = InVar(19)
+   LowVelCoef2 = InVar(20)
+   LowVelCoef3 = InVar(21)
+   Theta = InVar(22)
+EndSub
+
+'Store Variables to USR File (preserve variables)
+'--------------------------------------------------
+Sub StoreVariables
+  'store variables out
+  Dim Var(22) As String
+  Public SendVarString As String * 500
+  Public VarStringLen As Long
+  Public VarHandle = Long
+  Public Varbytes = Long
+  Public StoreCloseErr As Long
+  Dim VarCnt As Long
+  Var(1) = UpBeamOffset
+  Var(2) = VMPressOffset
+  Var(3) = PS1Offset
+  Var(4) = PS2Offset
+  Var(5) = SondeOffset
+  Var(6) = CalcQ
+  Var(7) = StgOffset
+  Var(8) = StgCoef
+  Var(9) = StgCoef2
+  Var(10) = VelOffset
+  Var(11) = VelCoef
+  Var(12) = VelCoef2
+  Var(13) = VelCoef3
+  Var(14) = UpVelOffset
+  Var(15) = UpVelCoef
+  Var(16) = UpVelCoef2
+  Var(17) = UpVelCoef3
+  Var(18) = LowVelOffset
+  Var(19) = LowVelCoef
+  Var(20) = LowVelCoef2
+  Var(21) = LowVelCoef3
+  Var(22) = Theta
+  'Var(36) = IsSubmersed
+  'build send string
+  SendVarString = Var(1) 
+  For VarCnt = 2 To 22
+    SendVarString = SendVarString + "," + Var(VarCnt)
+  Next VarCnt
+  VarStringLen = Len(SendVarString)
+  VarHandle = FileOpen("USR:VariableStore.txt","w",-1)
+  Delay(1,100,mSec)
+  Varbytes = FileWrite(VarHandle,SendVarString,VarStringLen + 50)
+  StoreCloseErr = FileClose(VarHandle)
+  StoreVariablesFlg = False  
+EndSub
+
+'_______________________________________________________Calculate a Checksum for the ensemble and extract ensemble checksum ____________________________________
+
+
+'_____________________________________Zero Counters___________________________________________________________
+Sub ZeroErrCounters
+  'BadBinCnt = 0
+  'BadEnsemble = 0
+  'BadEnsCount = 0
+  VMRestartAttempts = 0
+  BadStgCount = 0 'initialize bad stage counter
+  WqErrCount = 0 'set counter to zero at midnight
+  BadQCount = 0
+  BadVelCount = 0 'initialize counter
+  VMSerialErr = 0
+  EventVoltFlag  = no ' reset the catastrophic event flags
+  EventYSIFlag  = no
+  EventQFlag  = No
+  EventCDMAFlag = no
+  CDMAFailure = no
+  NewPS1 = False
+  NewPS2 = False
+EndSub
+
+
+'__________________________________Keypad Menus________________________________________
+Sub KeypadMenu
+  DisplayMenu ("Main Menu",-4)
+    SubMenu ("SystemInfo")
+      DisplayValue ("LastScan",LastScan)
+      DisplayValue ("Program",Program)
+      DisplayValue ("ProgVersDate",ProgVersDate)
+      DisplayValue ("DL_Firm",OSVers)
+      DisplayValue ("SerNum",SerNum)
+      DisplayValue ("ProgErrors",ProgErrors)
+      DisplayValue ("DataErr",DataErr)
+      DisplayValue ("Low12Volts",Low12Volts)
+      DisplayValue ("LithBat",LithBat)
+      DisplayValue ("SkipScans",SkipScans)
+      DisplayValue ("FreeCFMem",FreeCFMem)
+    EndSubMenu
+    SubMenu ("VM Data")
+      DisplayValue ("LastScan",LastScan)
+      DisplayValue ("StagePrime",StagePrime)
+      DisplayValue ("StageSecmd",StageSecnd)
+      DisplayValue ("StgDiff",StgDiff)
+      DisplayValue ("UpbeamStg",UpBeamStg)
+      DisplayValue ("VMPressStg",VMPressStg)
+      DisplayValue ("PS1Stg",PS1Stg)
+      DisplayValue ("PS2Stg",PS2Stg)
+      DisplayValue ("SondeStg",SondeStg)
+      DisplayValue ("IndexVel",IndexVel)
+      DisplayValue ("BadQCount",BadQCount)
+      DisplayValue ("Qcfs",Qcfs)
+      DisplayValue ("SiteVolts",CR1Volts)
+      DisplayValue ("VMvolts",VMVolts)
+      DisplayValue ("VMpitch",VMpitch)
+      DisplayValue ("VMroll",VMroll)
+      DisplayValue ("VMtempC",VMtempC)
+      DisplayValue ("BadVelCount",BadVelCount)
+      DisplayValue ("BadStgCount",BadStgCount)
+      DisplayValue ("VMUpBeam",VMUpBeam)
+      DisplayValue ("VMPressure",VMpressure)
+    EndSubMenu
+    SubMenu ("OtherSensorData")
+      DisplayValue ("LastScan",LastScan)
+          DisplayValue ("WQBattV",WqBattV)
+          DisplayValue ("WqTempC",WqTempC)
+          DisplayValue ("ExoSpCond",WqSpCond)
+          DisplayValue ("ExoTurbFNU",WqTurbFNU)
+          DisplayValue ("WQChlugL",WqChlugL)
+          DisplayValue ("WQChlRFU",WqChlRFU)
+          DisplayValue ("WQDOmgL",WqDOMgl)
+          DisplayValue ("WQDOSat",WqDOSat)
+          DisplayValue ("WQpH",WqPH)
+          DisplayValue ("WQBGAugL",WqBGAugl)
+          DisplayValue ("WQBGARFU",WqBGArfu)
+          DisplayValue ("WQFDomQSU",WqFDOMqsu)
+          DisplayValue ("WQFdomRFU",WqFDOMrfu)
+          DisplayValue ("WQNH4mgl",WqNH4mgl)
+          DisplayValue ("WQNO3mgl",WqNO3mgl)
+          DisplayValue ("WQCLmgl",WqCLmgl)
+          DisplayValue ("WQWiperPos",WqWiperPos)  
+    EndSubMenu
+    SubMenu ("SiteParameters")
+      DisplayValue ("LastScan",LastScan)
+      MenuItem ("Site Id",SiteID)
+      MenuItem ("SiteNumb",SiteNum)
+      MenuItem ("Tech?",Tech)
+      MenuItem ("VisitReason",VisitReason)
+      MenuPick (Site Visit,Calib Meas,Site Down,Beam Block,WQ Fouling,Program Update,Hardware Update,Other)
+      MenuItem ("RecCalibData?",RecCalibData)
+      MenuPick (yes,no)
+      MenuItem ("UpBeamOffSet",UpBeamOffset)
+      MenuItem ("VMPressOffset",VMPressOffset)
+      MenuItem ("PS1Offset",PS1Offset)
+      MenuItem ("PS2Offset",PS2Offset)
+      MenuItem ("SondeOffset",SondeOffset)
+      MenuItem ("TrueUpbeamStage",TrueUpBeamStg)
+      MenuItem ("TrueVMPressStage",TrueVMPressStg)
+      MenuItem ("TruePS1Stage",TruePS1Stg)
+      MenuItem ("TruePS2Stage",TruePS2Stg)
+      MenuItem ("TrueSondeStage",TrueSondeStg)
+      MenuItem ("DiveVisit?",DiveVisit)
+      MenuPick (yes,no)
+      DisplayValue ("DaysSinceDive",DaysSinceDive)
+      MenuItem ("MinExpVel",MinExpVel)
+      MenuItem ("MaxExpVel",MaxExpVel)
+      MenuItem ("MinExpStg",MinExpStg)
+      MenuItem ("MaxExpStg",MaxExpStg)
+      MenuItem ("Flow Sign",FlowSign)
+      MenuPick (1,-1)
+      MenuItem ("CalcQs?",CalcQ)
+      MenuPick (yes,no)
+      MenuItem ("Store all Variables",StoreVariablesFlg)
+      MenuPick (Yes,No)
+      MenuItem ("Read in Variables",GetVariablesFlg)
+      MenuItem ("HrsCdmaOff",HrsCdmaOff)
+      MenuPick (1,2,4,8,12)
+      MenuItem ("CycleCdmaPwr",CycleCdmaPwr)
+      MenuPick (Yes,No)
+      MenuItem ("CycleEXOPwr" ,WqManualCycle)
+      MenuPick (Yes,No)
+      MenuItem ("KeepCDMAon",KeepCDMAon)
+      MenuPick (Yes,No)
+      MenuItem ("UseNCcdmaRelay?",IsCDMANClosed) 'New entry for normally closed relay
+      MenuPick (Yes,No)
+      MenuItem ("Wake Up VM",WakeUpVm)
+      MenuPick (Yes,No)
+    EndSubMenu
+'    SubMenu ("AllBinData")
+'      DisplayValue ("Bin1",VMBinVel(1))
+'      DisplayValue ("Bin2",VMBinVel(2))
+'      DisplayValue ("Bin3",VMBinVel(3))
+'      DisplayValue ("Bin4",VMBinVel(4))
+'      DisplayValue ("Bin5",VMBinVel(5))
+'      DisplayValue ("Bin6",VMBinVel(6))
+'      DisplayValue ("Bin7",VMBinVel(7))
+'      DisplayValue ("Bin8",VMBinVel(8))
+'      DisplayValue ("Bin9",VMBinVel(9))
+'      DisplayValue ("Bin10",VMBinVel(10))
+'      DisplayValue ("Bin11",VMBinVel(11))
+'      DisplayValue ("Bin12",VMBinVel(12))
+'      DisplayValue ("Bin13",VMBinVel(13))
+'      DisplayValue ("Bin14",VMBinVel(14))
+'      DisplayValue ("Bin15",VMBinVel(15))
+'      DisplayValue ("Bin16",VMBinVel(16))
+'      DisplayValue ("Bin17",VMBinVel(17))
+'      DisplayValue ("Bin18",VMBinVel(18))
+'      DisplayValue ("Bin19",VMBinVel(19))
+'      DisplayValue ("Bin20",VMBinVel(20))
+'      DisplayValue ("Bin21",VMBinVel(21))
+'      DisplayValue ("Bin22",VMBinVel(22))
+'      DisplayValue ("Bin23",VMBinVel(23))
+'      DisplayValue ("Bin24",VMBinVel(24))
+'      DisplayValue ("Bin25",VMBinVel(25))
+'      DisplayValue ("Bin26",VMBinVel(26))
+'      DisplayValue ("Bin27",VMBinVel(27))
+'    EndSubMenu
+    'uncomment when you have the submenu for WQ sonde
+    
+        
+    SubMenu ("StageRating")
+      MenuItem ("StgOffset",StgOffset)
+      MenuItem ("StgCoef",StgCoef)
+      MenuItem ("StgCoef2",StgCoef2)
+    EndSubMenu
+    SubMenu ("meanvel_Rating")
+      MenuItem ("VelOffset",VelOffset)
+      MenuItem ("VelCoef",VelCoef)
+      MenuItem ("VelCoef2",VelCoef2)
+      MenuItem ("VelCoef3",VelCoef3)
+      MenuItem ("Trans",Trans)
+      MenuItem ("UpVelOffset",UpVelOffset)
+      MenuItem ("UpVelCoef",UpVelCoef)
+      MenuItem ("UpVelCoef2",UpVelCoef2)
+      MenuItem ("UpVelCoef3",UpVelCoef3)
+      MenuItem ("LowVelOffset",LowVelOffset)
+      MenuItem ("LowVelCoef",LowVelCoef)
+      MenuItem ("LowVelCoef2",LowVelCoef2)
+      MenuItem ("LowVelCoef3",LowVelCoef3)
+    EndSubMenu
+    SubMenu ("SDI12_Setup")
+      MenuItem ("PSPressPort",PSPressPort)
+      MenuPick (3,5)
+      MenuItem ("PSPressAddr",PSPressAddr)
+      MenuPick (0,1,2,3,4)
+      MenuItem ("PSpress2Port?",PSpress2Port)
+      MenuPick (3,5)
+      MenuItem ("PSpress2Addr?",PSpress2Addr)
+      MenuPick (0,1,2,3,4)     
+    EndSubMenu      
+  EndMenu
+EndSub
+
+'_______________________________________Main Program____________________________________
+'Main Program
+BeginProg
+  'INITIALIZE variables here that will hold their value from scan to scan
+  'Timer(1,mSec,2)
+  ScanDiff = 0
+  PanelTemp(PTempC,250)
+  PTempF = PTempC * 9/5 + 32
+  Call GetStartup 'setup all the statup\default info
+  Call CalcLoopInterval 'calculate the loop interval from the ScanRate and ScanUnit
+  Call Initialize 'initialize important variables
+  
+  '--------------start Scan -------------------------------------------------------
+  Scan (ScanRate,ScanUnit,5,0)'set to scan every 60 seconds
+    Dim InCount As Long 
+    ScanStart = Timer(2,mSec,2)
+    ScanStart = ScanStart/1000
+    ScanNo = ScanNo + 1
+    'Set the baudrates and open the serial ports
+   If VMBaudRateHi = True Then 'VM buadrate is 38400
+      #If (IsVmMax232 = Yes) AND (AdcpPort <> ComMe) Then
+        #If LoggerType = CR6 Then 
+          SerialOpen (AdcpPort,38400,19,0,2000,0)'open ADCP PORT at 38400 baud with 2000 byte buffer using format 3
+        #Else
+          SerialOpen (AdcpPort,38400,19,0,2000)
+        #EndIf
+      #Else  
+        #If LoggerType = CR6 Then 
+          SerialOpen (AdcpPort,38400,3,0,2000,0)'open ADCP PORT at 38400 baud with 2000 byte buffer using format 3
+        #Else
+          SerialOpen (AdcpPort,38400,3,0,2000)
+        #EndIf
+      #EndIf   
+   Else 'VM baudrate is 9600
+      #If (IsVmMax232 = Yes) AND (AdcpPort <> ComMe) Then
+         #If LoggerType = CR6 Then 
+          SerialOpen (AdcpPort,9600,19,0,2000,0)'open ADCP PORT at 9600 baud with 2000 byte buffer using format 3
+        #Else
+          SerialOpen (AdcpPort,9600,19,0,2000)
+        #EndIf
+      #Else  
+        #If LoggerType = CR6 Then 
+          SerialOpen (AdcpPort,9600,3,0,2000,0)'open ADCP PORT at 9600 baud with 2000 byte buffer using format 3
+        #Else
+          SerialOpen (AdcpPort,9600,3,0,2000)
+        #EndIf
+      #EndIf  
+    EndIf
+                  
+    If GetVariablesFlg = True Then
+      Call ReadVariables
+      GetVariablesFlg = False
+    EndIf  
+    'Call ToggleVMPower 'if set to VMpower = yes then ok otherwise turns off VM
+    Call TrueStage
+    UpBeamStg = VMupBeam + UpBeamOffset
+    VMPressStg = VMpressure + VMPressOffset
+    PS1Stg = PsPress1Stg(1) + PS1Offset
+    PS2Stg = PSpress2Stg(1) + PS2Offset
+    SondeStg = WqDepthFt + SondeOffset
+    
+    'If we have an EXO turn it on here
+     #If LoggerType = CR1000 Then 'turn on the Sonde
+        If IsWQNClosed Then
+           PortSet(WqSwitchPort,0)
+        Else
+          PortSet(WqSwitchPort,1)
+        EndIf
+      #ElseIf LoggerType = CR6 Then
+        If UseSW12_2_forWQ Then 'use the SW12 port no 2
+         SW12(2,1)
+        Else
+          If IsWQNClosed Then
+           PortSet(WqSwitchPort,0)
+          Else
+           PortSet(WqSwitchPort,1)
+          EndIf
+        EndIf  
+      #EndIf
+     iCount=1
+     Erase BurstIn
+     Erase BurstArray()
+     Erase BurstData()
+       
+    Call GetStage
+    RealTime (rTime)' get current time from datalogger real time clock
+    RealSeconds = (Hour * 3600) + (Minute * 60) + Second
+    'see if time is close to 15 minute or Day Interval
+    Mod5Minutes = RealSeconds MOD 300
+    Mod15Minutes = RealSeconds MOD 900
+    Mod60Minutes = RealSeconds MOD 3600
+    ModDay = RealSeconds MOD 86400
+    If Mod15Minutes < 85 Then 'If within 85 seconds of 15 minute time-period
+      'Reset all 15 minute flags or zero variables here
+      'RunEnsSpikes = 0
+      'SpikeCounter = 0
+    EndIf
+    If (ModDay > 300) AND (ModDay < 420) Then 'Reset bad data counter at between 5 and 7 minutes after Midnight
+      'Reset all Daily flags or zero variables here
+      Call ZeroErrCounters 'Reset Counters at midnight
+      '      PowerSwitch = True 'turn VM power relay back on after previous day site visit
+    EndIf
+    'If Mod60Minutes = 60 Then Call WakeVM 'temporary fix for counters\sensors wacking out.
+    
+    InCount=0
+    Call GetLastScan
+    Call GetSysInfo
+    Call KeypadMenu
+    'If Event ocures, then
+    '                If Tech <> "" OR VisitReason <> "" OR TrueStg1 <> NAN OR TrueStg2 <> NAN OR TrueStg3 <> NAN OR VisRefOK = True OR DiveVisit = True OR WQVisit = True OR FullVisit = True Then
+    If Tech <> "" OR VisitReason <> "" OR TrueUpBeamStg <> NAN OR TrueVMPressStg <> NAN OR TruePS1Stg <> NAN OR TruePS2Stg <> NAN OR TrueSondeStg <> NAN OR DiveVisit = True Then
+      ErrorEvent = "Tech Visit"
+      'PowerSwitch = false 'turn off relay that cycles VM power
+      'CallTable Event 'The table is stored using the tablefile instruction in Event and Outstat must be
+      CallTable SiteVisit
+      Call Visits
+      ' checked to see if data are to be sent.
+      Delay (0,200,mSec)
+      Tech = "" 'set tech back to null value
+      VisitReason = ""
+      'now set TrueStg values back to BadDataIndicator
+      TrueUpBeamStg = BadDataIndicator
+      TrueVMPressStg = BadDataIndicator
+      TruePS1Stg = BadDataIndicator
+      TruePS2Stg = BadDataIndicator
+      TrueSondeStg = BadDataIndicator
+      'Now set Visit Variables back to False
+      DiveVisit = False
+    EndIf
+    'toggle telemetery once a day and record system information to a file, zero error counters
+    If ModDay < 15 Then 'at midnight ~ Within 14 seconds
+      'ZERO THE SPIKE FILTERS HERE
+      Rec24HrFlag = Yes 'Trigger the QAQCinfo table
+      CallTable QAQCInfo 'only call table at midnight
+      SetEXOTimeFlg = True
+      StoreVariablesFlg = True
+    Else
+      Rec24HrFlag = No  'otherwise keep it turned off
+    EndIf
+    If Mod15Minutes < 15 Then 'when time to output data...within 14 seconds of 15 minute period
+      Rec15minFlag = Yes 'always set record data flag to yes every fifteen minutes
+      If WqDead = True Then 
+      RecAQFlag = True
+      Else
+        RecAQFlag = False
+        EndIf
+      'RecDataFlag = Yes 'let next statement know that it was done
+      GetBurst = Yes 'set the burst flag           
+    Else
+      GetBurst = No 'set the burst flag
+      Rec15minFlag = No 'turn off when not on 15min interval
+      RecAqFlag = False
+    EndIf
+    'set wipe flag if needed
+    If (Mod15Minutes > 770) AND (Mod15Minutes < 790) Then 'wipe 13mins +- 10s into a 15 min period when not collecting burst, set a disable variable
+          Wipeflag = True       
+    Else
+          Wipeflag = false 
+    EndIf
+    'at 14 minutes turn on Tilt sensor if we have one
+    #If HasTiltSensor = true Then
+     If (Mod15Minutes > 830) AND (Mod15Minutes < 850) Then 'at the 14 minute mark
+        Call ReadTiltSensor 'read the tilt sensor at the 14 minute mark
+     EndIf 
+    #EndIf
+    'Now check the next scan to see if we missed it
+    If (Mod15Minutes < 35) Then 'Check next scan (15 min within 34 Seconds)
+      Rec15minFlag = Yes 'always set record data flag to yes every fifteen minutes
+      'RecDataFlag = No 'Set it back to false for next time
+    EndIf
+    'If Mod15Minutes > 35 Then RecDataFlag = No
+    If RecCalibData = True Then 'if user has changed value to yes,then
+      Rec1MinFlag = True
+      Else
+      Rec1MinFlag = False
+      OneMinCount = 0
+    EndIf
+    If Rec1MinFlag = True Then
+      OneMinCount = OneMinCount + 1  
+      If OneMinCount > 1439 Then 'if 24 hours have been collected
+        RecCalibData = False
+        Rec1MinFlag = False
+        OneMinCount = 0
+      EndIf
+    EndIf
+    Call GetArgData
+    Call SubCalcQ
+    '    For ADCPLoop = 1 To 2
+    '     Do While SerialInChk(AdcpPort)
+           'PUT SONTEK READ HERE 
+     '     Loop
+      '  Subscans = Subscans + 1
+      ' ADCPDone = true
+       ' If ADCPDone Then ExitFor   
+      'Delay (1,5,Sec) 'Wait a bit for incoming ensemble, but not more than 10 seconds
+      'Next
+'      If VMdataIn = True Then
+'         NumbytesZero = 0
+'      EndIf
+      ADCPEnd = Timer(2,mSec,4)
+      ADCPEnd = ADCPEnd/1000
+      If VmDeadCount >= VMDeadCntMax Then
+        WakeUpVm = Yes
+      EndIf
+      Call CDMAcheck
+        
+'        If NumbytesZero > 7 Then
+'          BadEnsemble = BadEnsemble + 1
+'          Call ZeroVMArrays
+'          VMdataIn = No
+'          SerialFlush(AdcpPort)
+'          NumbytesZero = 0
+'        EndIf
+'        If Numbytes < 1 Then
+'          NumbytesZero = NumbytesZero + 1
+'        Else
+'          NumbytesZero = 0
+'        EndIf
+'        Receivedbytes = Numbytes
+'        InCount = 0
+        
+     
+    BeforeBurst = Timer(2,msec,4)
+    BeforeBurst = BeforeBurst/1000
+     If WqParamOrder(1) = BadDataIndicator Then Redeploy = True
+     If Redeploy = True Then 'EXO not setup yet
+          Call ParamCheck
+          Delay (1,1,Sec)
+          Call DefineParamsOrder
+          Delay (1,1,Sec)
+          Call DefineLocs
+          Delay (1,1,Sec)
+          Call SetDelim
+          Delay (1,1,Sec)
+          Redeploy = False
+      Else
+          Call GetWQ_Serial 'get a single data point 
+          Delay (1,30,mSec)
+          Call ParseData
+          If GetBurst AND NOT Redeploy Then 'ok we need a burst
+              If WqError = False Then 'If sonde is having probs then don't burst
+                Call setburst
+                Call GetBurstArray
+                BurstMedDate = ""
+                BurstMedTime = ""
+                BurstCount = 0
+                For jCount = 1 To 30 'de-construct BurstArray and send to table.  too slow to do in get loop
+                  For kCount = 1 To 23
+                   BurstData(kCount) = BurstArray(jCount,kCount)' get one burst string
+                  Next kCount
+                  Call parseburst
+                  If WqError Then
+                     WqBadData = true
+                  Else
+                     WqBadData = false      
+                  EndIf
+                  Delay(1,30,msec)
+                 'TO DO set these maximums in the constant table so they can be changed all at once
+                  BurstCount = BurstCount+1
+                  If BurstCount = 15 Then
+                    BurstMedDate = BurstDate 'get median Date and time of burst sample
+                    BurstMedTime = BurstTime ' "   "      "        "       "     "
+                  EndIf  
+                  If BurstCount >= 30 Then 'output the table on the last burst string after all variables are collected
+                    RecBurstFlag = True
+                    CallTable Burst
+                  Else
+                    RecBurstFlag = false
+                  EndIf
+                  Delay(1,1,msec)
+                Next jCount
+                kCount = 0
+                jCount = 0
+                'RecBurstFlag = false
+              EndIf 'if no wqerror  
+           EndIf 'getburst and not redeploy
+     EndIf 'Redeploy = true
+     
+    If (WqParamOrder(1) = BadDataIndicator) OR (WqError = True)'unable to initialize or bad data 
+      Call WQ_Mark_Bad
+      Erase WqData()
+      If WqDead AND WQPwrCycleCnt >= WQDeadCntMax Then 'cycle power to the Sonde
+         Call CycleWQPower
+       EndIf 
+      WqErrCount = WqErrCount + 1
+      WqPwrCycleCnt = WqPwrCycleCnt + 1
+       If WqErrCount >= WQDeadCntMax Then
+        WqDead = True
+        'WqDeadCnt = WqDeadCnt + 1
+       EndIf
+    EndIf 'error
+  AfterBurst = Timer(2,msec,4)
+  AfterBurst = AfterBurst/1000
+  If WqError = true Then
+    WqBadData = True
+  Else
+    WqBadData = False 
+  EndIf    
+    
+    
+  If VMdataIn = Yes Then 'only process data if we have it
+     VmDeadCount = 0
+     TempDiff = WqTempC - VMtempC
+            'Call SubCalcQ     
+  Else 'if no vm data in
+      VmDeadCount = VmDeadCount + 1 
+  EndIf 'if vm data in
+  
+  #If (HasTiltSensor = Yes) Then
+    If Wipeflag = Yes Then 
+    'at the 13 minute mark, turn on the power to the tilt sensor, read it, and then turn power back off
+     Call TurnOnTilt
+    EndIf
+  #EndIf
+ 
+    'if there is no velocity meter or bad vel data but we still want the dataout or data1min table for Sonde data
+  Call StageDiff
+  Call CamBatBnk
+  'Call ResetMeasFlags
+  Call GetSN
+  If Wipeflag = true Then
+    Call WipeWQ
+    Delay (1,1,Sec)
+    WipeTime = Status.TimeStamp(0,1)
+  EndIf
+  If SetEXOTimeFlg = True Then
+    Call SetEXOTime
+  EndIf
+  If WqManualCycle = true Then
+    Call CycleWQpower
+  EndIf
+    'we do the final call for aquarius burst and burst here because we need stuff from the DataOut table for the VM portion of those tables
+    'get dataout variables for aquarius
+  CallTable DataOut
+  CallTable Data1m 
+  AvgIndexVel = DataOut.IndexVel_Avg
+  AvgVMTempC = DataOut.VMtempC_Avg
+  AvgVMPitch = DataOut.VMpitch_Avg
+  AvgVMRoll = DataOut.VMroll_Avg
+  AvgStagePrime = Dataout.StagePrime_Avg
+  AvgStageSec = Dataout.StageSecnd_Avg
+  CallTable Aquarius   
+     'store the instantaneous variables to the aquarius table      
+   Rec15minFlag = false 'turn it off for now
+   RecBurstFlag = false
+   RecAQFlag = False
+   If StoreVariablesFlg = true Then Call StoreVariables
+   If WakeUpVm = Yes Then Call CycleVMPower
+   ScanEnd = Timer(2,mSec,4)
+   ScanEnd = ScanEnd/1000
+   ProcessTime = ScanEnd - ScanStart
+  NextScan
+EndProg
